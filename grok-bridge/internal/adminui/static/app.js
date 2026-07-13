@@ -1,4 +1,4 @@
-/* Grok Bridge Admin SPA — vanilla JS, no build step */
+/* Grok Bridge Admin SPA — 中文界面，无构建步骤 */
 (function () {
   "use strict";
 
@@ -8,6 +8,7 @@
   const state = {
     authed: false,
     page: "dashboard",
+    loading: false,
     error: "",
     flash: "",
     dashboard: null,
@@ -17,8 +18,11 @@
     settings: null,
     logFilters: { from: "", to: "", account_id: "", model: "", status: "", protocol: "" },
     selectedLog: null,
-    modal: null, // { type, data }
+    modal: null,
   };
+
+  // 防止快速切换菜单时旧请求覆盖新页面
+  let loadSeq = 0;
 
   // ---------- helpers ----------
   async function api(path, opts = {}) {
@@ -40,7 +44,7 @@
     }
     if (!res.ok) {
       const msg = (data && data.error) || (typeof data === "string" ? data : "") || res.statusText;
-      const err = new Error(msg || "request failed");
+      const err = new Error(msg || "请求失败");
       err.status = res.status;
       err.data = data;
       throw err;
@@ -55,35 +59,52 @@
         if (k === "className") node.className = v;
         else if (k === "text") node.textContent = v;
         else if (k === "html") node.innerHTML = v;
-        else if (k.startsWith("on") && typeof v === "function") node.addEventListener(k.slice(2).toLowerCase(), v);
-        else if (v === false || v == null) continue;
+        else if (k.startsWith("on") && typeof v === "function") {
+          // onclick -> click, onsubmit -> submit
+          const type = k.slice(2).toLowerCase();
+          node.addEventListener(type, v);
+        } else if (v === false || v == null) continue;
         else if (v === true) node.setAttribute(k, "");
-        else node.setAttribute(k, v);
+        else node.setAttribute(k, String(v));
       }
     }
-    for (const c of children.flat()) {
-      if (c == null || c === false) continue;
+    // Flatten carefully: arrays of nodes ok; never spread a single DOM node
+    const flat = [];
+    const push = (c) => {
+      if (c == null || c === false) return;
+      if (Array.isArray(c)) {
+        c.forEach(push);
+        return;
+      }
+      flat.push(c);
+    };
+    children.forEach(push);
+    for (const c of flat) {
       node.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
     }
     return node;
   }
 
-  function esc(s) {
-    return String(s ?? "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  }
-
   function badge(status) {
     const s = String(status || "").toLowerCase();
     let cls = "badge-muted";
-    if (s === "active" || s === "enabled" || s === "ok") cls = "badge-active";
-    else if (s === "error" || s === "failed") cls = "badge-error";
-    else if (s === "disabled") cls = "badge-disabled";
-    else if (s === "warning" || s === "pending") cls = "badge-warning";
-    return el("span", { className: "badge " + cls, text: status || "—" });
+    let text = status || "—";
+    if (s === "active" || s === "enabled" || s === "ok") {
+      cls = "badge-active";
+      text = s === "active" || s === "enabled" ? "启用" : text;
+    } else if (s === "error" || s === "failed") {
+      cls = "badge-error";
+      text = s === "error" ? "错误" : text;
+    } else if (s === "disabled") {
+      cls = "badge-disabled";
+      text = "禁用";
+    } else if (s === "expired") {
+      cls = "badge-warning";
+      text = "已过期";
+    } else if (s === "warning" || s === "pending") {
+      cls = "badge-warning";
+    }
+    return el("span", { className: "badge " + cls, text });
   }
 
   function statusBadge(code) {
@@ -154,10 +175,28 @@
     state.settings = await api("/settings");
   }
 
-  async function loadPage() {
+  function goPage(id) {
+    if (state.page === id && !state.loading) {
+      // 同页再点：强制刷新
+      loadPage();
+      return;
+    }
+    state.page = id;
+    state.selectedLog = null;
+    state.modal = null;
     clearMessages();
+    // 先立刻渲染目标页骨架，再拉数据（避免“点了没反应”）
+    render();
+    loadPage();
+  }
+
+  async function loadPage() {
+    const seq = ++loadSeq;
+    const page = state.page;
+    state.loading = true;
+    render();
     try {
-      switch (state.page) {
+      switch (page) {
         case "dashboard":
           await loadDashboard();
           break;
@@ -180,8 +219,13 @@
       } else {
         setError(e.message);
       }
+    } finally {
+      // 只有最新一次加载才更新 UI
+      if (seq === loadSeq) {
+        state.loading = false;
+        render();
+      }
     }
-    render();
   }
 
   // ---------- actions ----------
@@ -190,24 +234,27 @@
       await api("/login", { method: "POST", body: JSON.stringify({ password }) });
       state.authed = true;
       state.page = "dashboard";
+      clearMessages();
       await loadPage();
     } catch (e) {
-      setError(e.message || "Login failed");
+      setError(e.message || "登录失败");
       render();
     }
   }
 
   async function importAccountsFile(file) {
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const data = await api("/accounts/import", { method: "POST", body: fd });
-      setFlash(`Imported: inserted ${data.inserted ?? 0}, updated ${data.updated ?? 0}`);
+      const text = await file.text();
+      const data = await api("/accounts/import", {
+        method: "POST",
+        body: text,
+        headers: { "Content-Type": "application/json" },
+      });
+      setFlash("导入完成：新增 " + (data.inserted ?? 0) + "，更新 " + (data.updated ?? 0));
       await loadAccounts();
     } catch (e) {
-      setError(e.message);
+      setError(e.message || "导入失败");
     }
-    state.modal = null;
     render();
   }
 
@@ -217,19 +264,7 @@
         method: "PATCH",
         body: JSON.stringify(body),
       });
-      setFlash("Account updated");
-      await loadAccounts();
-    } catch (e) {
-      setError(e.message);
-    }
-    render();
-  }
-
-  async function deleteAccount(id) {
-    if (!confirm("Delete this account?")) return;
-    try {
-      await api("/accounts/" + encodeURIComponent(id), { method: "DELETE" });
-      setFlash("Account deleted");
+      setFlash("账号已更新");
       await loadAccounts();
     } catch (e) {
       setError(e.message);
@@ -240,7 +275,7 @@
   async function refreshAccount(id) {
     try {
       await api("/accounts/" + encodeURIComponent(id) + "/refresh", { method: "POST" });
-      setFlash("Token refreshed");
+      setFlash("Token 已刷新");
       await loadAccounts();
     } catch (e) {
       setError(e.message);
@@ -248,68 +283,97 @@
     render();
   }
 
-  function exportAccount(id) {
-    // Use cookie credentials via same-origin navigation
-    window.open(API + "/accounts/" + encodeURIComponent(id) + "/export", "_blank");
+  async function deleteAccount(id) {
+    if (!confirm("确定删除该账号？此操作不可恢复。")) return;
+    try {
+      await api("/accounts/" + encodeURIComponent(id), { method: "DELETE" });
+      setFlash("账号已删除");
+      await loadAccounts();
+    } catch (e) {
+      setError(e.message);
+    }
+    render();
+  }
+
+  async function exportAccount(id) {
+    try {
+      const data = await api("/accounts/" + encodeURIComponent(id) + "/export");
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "xai-account-" + shortId(id) + ".json";
+      a.click();
+      URL.revokeObjectURL(a.href);
+      setFlash("已导出 JSON");
+    } catch (e) {
+      setError(e.message);
+    }
+    render();
   }
 
   async function startOAuth() {
     try {
       const data = await api("/accounts/oauth/start", { method: "POST", body: "{}" });
-      state.modal = { type: "oauth", data, polling: false, status: "waiting" };
+      state.modal = { type: "oauth", data, status: "等待授权…" };
       render();
       pollOAuth(data);
     } catch (e) {
-      setError(e.message);
+      setError(e.message || "启动 OAuth 失败");
       render();
     }
   }
 
-  async function pollOAuth(dc) {
-    if (!state.modal || state.modal.type !== "oauth") return;
-    state.modal.polling = true;
-    const interval = Math.max(2, Number(dc.interval) || 5) * 1000;
-    const deadline = Date.now() + (Number(dc.expires_in) || 600) * 1000;
-
-    while (state.modal && state.modal.type === "oauth" && Date.now() < deadline) {
-      await sleep(interval);
+  async function pollOAuth(start) {
+    const body = {
+      device_code: start.device_code,
+      token_endpoint: start.token_endpoint,
+      enable: true,
+    };
+    const max = 60;
+    for (let i = 0; i < max; i++) {
       if (!state.modal || state.modal.type !== "oauth") return;
+      await sleep(2000);
       try {
         const res = await api("/accounts/oauth/poll", {
           method: "POST",
-          body: JSON.stringify({
-            device_code: dc.device_code,
-            token_endpoint: dc.token_endpoint || "",
-            enable: true,
-          }),
+          body: JSON.stringify(body),
         });
-        if (res.status === "pending") {
-          state.modal.status = "pending";
-          render();
-          continue;
-        }
-        if (res.status === "authorized" || res.account) {
+        if (res && (res.account || res.id || res.status === "ok" || res.done)) {
           state.modal = null;
-          setFlash("Account authorized: " + (res.account?.email || res.account?.label || "ok"));
+          setFlash("OAuth 登录成功，账号已写入");
           state.page = "accounts";
           await loadAccounts();
           render();
           return;
         }
+        if (state.modal) {
+          state.modal.status = res.status || res.message || "等待授权…";
+          render();
+        }
       } catch (e) {
-        state.modal.status = "error: " + e.message;
-        render();
-        // keep polling on transient errors unless expired
+        // authorization_pending 等继续等
+        if (e.status && e.status !== 400 && e.status !== 428) {
+          if (String(e.message || "").includes("pending") || String(e.message || "").includes("slow_down")) {
+            if (state.modal) {
+              state.modal.status = "等待授权…";
+              render();
+            }
+            continue;
+          }
+          setError(e.message);
+          state.modal = null;
+          render();
+          return;
+        }
+        if (state.modal) {
+          state.modal.status = e.message || "等待授权…";
+          render();
+        }
       }
     }
-    if (state.modal && state.modal.type === "oauth") {
-      state.modal.status = "expired";
-      render();
-    }
-  }
-
-  function sleep(ms) {
-    return new Promise((r) => setTimeout(r, ms));
+    setError("OAuth 等待超时");
+    state.modal = null;
+    render();
   }
 
   async function createKey(label) {
@@ -328,10 +392,10 @@
   }
 
   async function revokeKey(id) {
-    if (!confirm("Revoke this API key?")) return;
+    if (!confirm("确定吊销该 API Key？")) return;
     try {
       await api("/keys/" + encodeURIComponent(id), { method: "DELETE" });
-      setFlash("Key revoked");
+      setFlash("API Key 已吊销");
       await loadKeys();
     } catch (e) {
       setError(e.message);
@@ -341,7 +405,8 @@
 
   async function openLog(id) {
     try {
-      state.selectedLog = await api("/logs/" + encodeURIComponent(id));
+      const data = await api("/logs/" + encodeURIComponent(id));
+      state.selectedLog = data.log || data;
     } catch (e) {
       setError(e.message);
     }
@@ -354,11 +419,15 @@
         method: "PUT",
         body: JSON.stringify(payload),
       });
-      setFlash("Settings saved");
+      setFlash("设置已保存");
     } catch (e) {
       setError(e.message);
     }
     render();
+  }
+
+  function sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
   }
 
   // ---------- views ----------
@@ -374,12 +443,12 @@
         },
       },
       el("h1", { text: "Grok Bridge" }),
-      el("p", { className: "subtitle", text: "Admin console" }),
+      el("p", { className: "subtitle", text: "管理后台" }),
       state.error ? el("div", { className: "error-banner", text: state.error }) : null,
       el(
         "div",
         { className: "form-group" },
-        el("label", { for: "password", text: "Password" }),
+        el("label", { for: "password", text: "管理员密码" }),
         el("input", {
           type: "password",
           id: "password",
@@ -389,7 +458,7 @@
           autofocus: true,
         })
       ),
-      el("button", { type: "submit", className: "btn btn-primary btn-block", text: "Sign in" })
+      el("button", { type: "submit", className: "btn btn-primary btn-block", text: "登录" })
     );
     app.replaceChildren(el("div", { className: "login-page" }, form));
   }
@@ -399,11 +468,10 @@
       type: "button",
       className: "nav-item" + (state.page === id ? " active" : ""),
       text: label,
-      onclick: () => {
-        state.page = id;
-        state.selectedLog = null;
-        state.modal = null;
-        loadPage();
+      onclick: (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        goPage(id);
       },
     });
   }
@@ -413,34 +481,36 @@
       "aside",
       { className: "sidebar" },
       el("div", { className: "brand", html: 'Grok <span>Bridge</span>' }),
-      navItem("dashboard", "Dashboard"),
-      navItem("accounts", "Accounts"),
-      navItem("keys", "API Keys"),
-      navItem("logs", "Logs"),
-      navItem("settings", "Settings"),
+      navItem("dashboard", "仪表盘"),
+      navItem("accounts", "账号"),
+      navItem("keys", "API 密钥"),
+      navItem("logs", "请求日志"),
+      navItem("settings", "设置"),
       el(
         "div",
         { className: "sidebar-footer" },
         el("button", {
           type: "button",
           className: "btn btn-ghost btn-sm btn-block",
-          text: "Refresh",
-          onclick: () => loadPage(),
+          text: state.loading ? "加载中…" : "刷新本页",
+          disabled: state.loading,
+          onclick: (e) => {
+            e.preventDefault();
+            loadPage();
+          },
         })
       )
     );
 
     const mainKids = [];
+    if (state.loading) {
+      mainKids.push(el("div", { className: "loading-bar", text: "加载中…" }));
+    }
     if (state.error) mainKids.push(el("div", { className: "error-banner", text: state.error }));
     if (state.flash) mainKids.push(el("div", { className: "success-banner", text: state.flash }));
     mainKids.push(content);
 
-    const shell = el(
-      "div",
-      { className: "shell" },
-      sidebar,
-      el("main", { className: "main" }, ...mainKids)
-    );
+    const shell = el("div", { className: "shell" }, sidebar, el("main", { className: "main" }, ...mainKids));
 
     const extras = [];
     if (state.modal) extras.push(renderModal());
@@ -454,11 +524,11 @@
     const cards = el(
       "div",
       { className: "cards" },
-      card("Today", d.today_count ?? "—"),
-      card("Today errors", d.today_errors ?? "—", d.today_errors > 0),
-      card("Last 7 days", d.last_7d_count ?? "—"),
-      card("7d errors", d.last_7d_errors ?? "—", d.last_7d_errors > 0),
-      card("Active accounts", d.active_accounts ?? "—")
+      card("今日请求", d.today_count ?? "—"),
+      card("今日错误", d.today_errors ?? "—", d.today_errors > 0),
+      card("近 7 日请求", d.last_7d_count ?? "—"),
+      card("近 7 日错误", d.last_7d_errors ?? "—", d.last_7d_errors > 0),
+      card("可用账号", d.active_accounts ?? "—")
     );
 
     const topModels = namedList(d.top_models || []);
@@ -467,13 +537,13 @@
     const content = el(
       "div",
       null,
-      el("div", { className: "page-header" }, el("h2", { text: "Dashboard" })),
+      el("div", { className: "page-header" }, el("h2", { text: "仪表盘" })),
       cards,
       el(
         "div",
         { className: "two-col" },
-        el("div", { className: "panel" }, el("h3", { text: "Top models" }), topModels),
-        el("div", { className: "panel" }, el("h3", { text: "Top accounts" }), topAccounts)
+        el("div", { className: "panel" }, el("h3", { text: "热门模型" }), topModels),
+        el("div", { className: "panel" }, el("h3", { text: "热门账号" }), topAccounts)
       )
     );
     renderShell(content);
@@ -489,7 +559,7 @@
   }
 
   function namedList(items) {
-    if (!items.length) return el("div", { className: "empty", text: "No data yet" });
+    if (!items.length) return el("div", { className: "empty", text: "暂无数据" });
     return el(
       "ul",
       { className: "list-plain" },
@@ -507,7 +577,7 @@
   function renderAccounts() {
     const rows =
       state.accounts.length === 0
-        ? el("tr", null, el("td", { colspan: "7", className: "empty", text: "No accounts yet. Import JSON or start OAuth." }))
+        ? [el("tr", null, el("td", { colspan: "7", className: "empty", text: "暂无账号。请导入 JSON 或使用 OAuth 登录。" }))]
         : state.accounts.map((a) =>
             el(
               "tr",
@@ -517,7 +587,7 @@
               el("td", null, badge(a.status)),
               el("td", { className: "mono muted", text: a.expires_at ? fmtTime(a.expires_at) : "—" }),
               el("td", { className: "mono muted", text: a.access_token_suffix || "—" }),
-              el("td", { text: a.has_refresh_token ? "yes" : "no" }),
+              el("td", { text: a.has_refresh_token ? "有" : "无" }),
               el(
                 "td",
                 null,
@@ -526,28 +596,33 @@
                   { className: "row-actions" },
                   a.status === "disabled"
                     ? el("button", {
+                        type: "button",
                         className: "btn btn-sm",
-                        text: "Enable",
+                        text: "启用",
                         onclick: () => patchAccount(a.id, { status: "active" }),
                       })
                     : el("button", {
+                        type: "button",
                         className: "btn btn-sm",
-                        text: "Disable",
+                        text: "禁用",
                         onclick: () => patchAccount(a.id, { status: "disabled" }),
                       }),
                   el("button", {
+                    type: "button",
                     className: "btn btn-sm",
-                    text: "Refresh",
+                    text: "刷新 Token",
                     onclick: () => refreshAccount(a.id),
                   }),
                   el("button", {
+                    type: "button",
                     className: "btn btn-sm",
-                    text: "Export",
+                    text: "导出",
                     onclick: () => exportAccount(a.id),
                   }),
                   el("button", {
+                    type: "button",
                     className: "btn btn-sm btn-danger",
-                    text: "Delete",
+                    text: "删除",
                     onclick: () => deleteAccount(a.id),
                   })
                 )
@@ -573,19 +648,24 @@
       el(
         "div",
         { className: "page-header" },
-        el("h2", { text: "Accounts" }),
+        el("h2", { text: "账号" }),
         el(
           "div",
           { className: "actions" },
           fileInput,
           el("button", {
+            type: "button",
             className: "btn",
-            text: "Import JSON",
-            onclick: () => document.getElementById("import-file").click(),
+            text: "导入 JSON",
+            onclick: () => {
+              const input = document.getElementById("import-file");
+              if (input) input.click();
+            },
           }),
           el("button", {
+            type: "button",
             className: "btn btn-primary",
-            text: "OAuth login",
+            text: "OAuth 登录",
             onclick: () => startOAuth(),
           })
         )
@@ -602,13 +682,13 @@
             el(
               "tr",
               null,
-              el("th", { text: "Account" }),
-              el("th", { text: "Email" }),
-              el("th", { text: "Status" }),
-              el("th", { text: "Expires" }),
+              el("th", { text: "账号" }),
+              el("th", { text: "邮箱" }),
+              el("th", { text: "状态" }),
+              el("th", { text: "过期时间" }),
               el("th", { text: "Token" }),
               el("th", { text: "Refresh" }),
-              el("th", { text: "Actions" })
+              el("th", { text: "操作" })
             )
           ),
           el("tbody", null, ...rows)
@@ -621,7 +701,7 @@
   function renderKeys() {
     const rows =
       state.keys.length === 0
-        ? el("tr", null, el("td", { colspan: "5", className: "empty", text: "No API keys yet." }))
+        ? [el("tr", null, el("td", { colspan: "5", className: "empty", text: "暂无 API 密钥。" }))]
         : state.keys.map((k) =>
             el(
               "tr",
@@ -629,13 +709,14 @@
               el("td", { text: k.label || "—" }),
               el("td", { className: "mono", text: k.key_prefix || shortId(k.id) }),
               el("td", null, badge(k.enabled ? "active" : "disabled")),
-              el("td", { className: "muted", text: k.last_used_at ? fmtTime(k.last_used_at) : "never" }),
+              el("td", { className: "muted", text: k.last_used_at ? fmtTime(k.last_used_at) : "从未使用" }),
               el(
                 "td",
                 null,
                 el("button", {
+                  type: "button",
                   className: "btn btn-sm btn-danger",
-                  text: "Revoke",
+                  text: "吊销",
                   onclick: () => revokeKey(k.id),
                 })
               )
@@ -648,13 +729,14 @@
       el(
         "div",
         { className: "page-header" },
-        el("h2", { text: "API Keys" }),
+        el("h2", { text: "API 密钥" }),
         el(
           "div",
           { className: "actions" },
           el("button", {
+            type: "button",
             className: "btn btn-primary",
-            text: "Create key",
+            text: "创建密钥",
             onclick: () => {
               state.modal = { type: "create-key" };
               render();
@@ -674,11 +756,11 @@
             el(
               "tr",
               null,
-              el("th", { text: "Label" }),
-              el("th", { text: "Prefix" }),
-              el("th", { text: "Status" }),
-              el("th", { text: "Last used" }),
-              el("th", { text: "Actions" })
+              el("th", { text: "备注" }),
+              el("th", { text: "前缀" }),
+              el("th", { text: "状态" }),
+              el("th", { text: "最近使用" }),
+              el("th", { text: "操作" })
             )
           ),
           el("tbody", null, ...rows)
@@ -693,52 +775,85 @@
     const filters = el(
       "div",
       { className: "filters" },
-      field("From", el("input", {
-        type: "text",
-        placeholder: "RFC3339",
-        value: f.from,
-        oninput: (e) => { f.from = e.target.value; },
-      })),
-      field("To", el("input", {
-        type: "text",
-        placeholder: "RFC3339",
-        value: f.to,
-        oninput: (e) => { f.to = e.target.value; },
-      })),
-      field("Account ID", el("input", {
-        type: "text",
-        value: f.account_id,
-        oninput: (e) => { f.account_id = e.target.value; },
-      })),
-      field("Model", el("input", {
-        type: "text",
-        value: f.model,
-        oninput: (e) => { f.model = e.target.value; },
-      })),
-      field("Status", el("input", {
-        type: "text",
-        placeholder: "e.g. 500",
-        value: f.status,
-        oninput: (e) => { f.status = e.target.value; },
-      })),
-      field("Protocol", el("select", {
-        onchange: (e) => { f.protocol = e.target.value; },
-      },
-        el("option", { value: "", text: "Any", selected: !f.protocol }),
-        el("option", { value: "claude", text: "claude", selected: f.protocol === "claude" }),
-        el("option", { value: "openai_chat", text: "openai_chat", selected: f.protocol === "openai_chat" }),
-        el("option", { value: "openai_responses", text: "openai_responses", selected: f.protocol === "openai_responses" })
-      )),
+      field(
+        "开始时间",
+        el("input", {
+          type: "text",
+          placeholder: "RFC3339",
+          value: f.from,
+          oninput: (e) => {
+            f.from = e.target.value;
+          },
+        })
+      ),
+      field(
+        "结束时间",
+        el("input", {
+          type: "text",
+          placeholder: "RFC3339",
+          value: f.to,
+          oninput: (e) => {
+            f.to = e.target.value;
+          },
+        })
+      ),
+      field(
+        "账号 ID",
+        el("input", {
+          type: "text",
+          value: f.account_id,
+          oninput: (e) => {
+            f.account_id = e.target.value;
+          },
+        })
+      ),
+      field(
+        "模型",
+        el("input", {
+          type: "text",
+          value: f.model,
+          oninput: (e) => {
+            f.model = e.target.value;
+          },
+        })
+      ),
+      field(
+        "状态码",
+        el("input", {
+          type: "text",
+          placeholder: "例如 500",
+          value: f.status,
+          oninput: (e) => {
+            f.status = e.target.value;
+          },
+        })
+      ),
+      field(
+        "协议",
+        el(
+          "select",
+          {
+            onchange: (e) => {
+              f.protocol = e.target.value;
+            },
+          },
+          el("option", { value: "", text: "全部", selected: !f.protocol }),
+          el("option", { value: "claude", text: "claude", selected: f.protocol === "claude" }),
+          el("option", { value: "openai_chat", text: "openai_chat", selected: f.protocol === "openai_chat" }),
+          el("option", { value: "openai_responses", text: "openai_responses", selected: f.protocol === "openai_responses" })
+        )
+      ),
       el("button", {
+        type: "button",
         className: "btn btn-primary",
-        text: "Apply",
+        text: "查询",
         onclick: () => loadPage(),
       })
     );
 
     const rows =
       state.logs.length === 0
-        ? el("tr", null, el("td", { colspan: "8", className: "empty", text: "No logs match." }))
+        ? [el("tr", null, el("td", { colspan: "8", className: "empty", text: "没有匹配的日志。" }))]
         : state.logs.map((log) =>
             el(
               "tr",
@@ -760,7 +875,7 @@
     const content = el(
       "div",
       null,
-      el("div", { className: "page-header" }, el("h2", { text: "Request Logs" })),
+      el("div", { className: "page-header" }, el("h2", { text: "请求日志" })),
       filters,
       el(
         "div",
@@ -774,14 +889,14 @@
             el(
               "tr",
               null,
-              el("th", { text: "Time" }),
-              el("th", { text: "Status" }),
-              el("th", { text: "Protocol" }),
-              el("th", { text: "Model" }),
-              el("th", { text: "Account" }),
-              el("th", { text: "API key" }),
-              el("th", { text: "Latency" }),
-              el("th", { text: "Error" })
+              el("th", { text: "时间" }),
+              el("th", { text: "状态" }),
+              el("th", { text: "协议" }),
+              el("th", { text: "模型" }),
+              el("th", { text: "账号" }),
+              el("th", { text: "API 密钥" }),
+              el("th", { text: "耗时" }),
+              el("th", { text: "错误" })
             )
           ),
           el("tbody", null, ...rows)
@@ -812,9 +927,7 @@
             retention: Number(e.target.retention.value),
           };
           const pw = (e.target.admin_password.value || "").trim();
-          if (pw) {
-            payload.admin_password = pw;
-          }
+          if (pw) payload.admin_password = pw;
           saveSettings(payload).then(() => {
             e.target.admin_password.value = "";
           });
@@ -823,19 +936,22 @@
       el(
         "div",
         { className: "form-group" },
-        el("label", { for: "log_bodies", text: "Log bodies" }),
+        el("label", { for: "log_bodies", text: "请求体记录" }),
         el(
           "select",
           { id: "log_bodies", name: "log_bodies" },
-          ...["off", "errors_only", "sample", "all"].map((v) =>
-            el("option", { value: v, text: v, selected: logBodies === v })
-          )
+          ...[
+            ["off", "关闭"],
+            ["errors_only", "仅错误"],
+            ["sample", "采样"],
+            ["all", "全部"],
+          ].map(([v, t]) => el("option", { value: v, text: t, selected: logBodies === v }))
         )
       ),
       el(
         "div",
         { className: "form-group" },
-        el("label", { for: "retention", text: "Retention (days)" }),
+        el("label", { for: "retention", text: "日志保留天数" }),
         el("input", {
           type: "number",
           id: "retention",
@@ -847,28 +963,23 @@
       el(
         "div",
         { className: "form-group" },
-        el("label", { for: "admin_password", text: "New admin password (optional)" }),
+        el("label", { for: "admin_password", text: "新管理员密码（可选）" }),
         el("input", {
           type: "password",
           id: "admin_password",
           name: "admin_password",
           autocomplete: "new-password",
-          placeholder: "Leave blank to keep current",
+          placeholder: "留空则不修改",
         }),
         el("p", {
           className: "muted",
-          text: "Updates the running server. If GROK_BRIDGE_ADMIN_PASSWORD is unset, also persists to the settings table across restarts. Prefer env for production secrets.",
+          text: "立即更新当前进程。若未设置环境变量 GROK_BRIDGE_ADMIN_PASSWORD，会写入数据库以便重启后生效。生产环境建议用环境变量。",
         })
       ),
-      el("button", { type: "submit", className: "btn btn-primary", text: "Save settings" })
+      el("button", { type: "submit", className: "btn btn-primary", text: "保存设置" })
     );
 
-    const content = el(
-      "div",
-      null,
-      el("div", { className: "page-header" }, el("h2", { text: "Settings" })),
-      form
-    );
+    const content = el("div", null, el("div", { className: "page-header" }, el("h2", { text: "设置" })), form);
     renderShell(content);
   }
 
@@ -891,7 +1002,7 @@
         el(
           "div",
           { className: "modal" },
-          el("h3", { text: "Create API key" }),
+          el("h3", { text: "创建 API 密钥" }),
           el(
             "form",
             {
@@ -903,8 +1014,8 @@
             el(
               "div",
               { className: "form-group" },
-              el("label", { for: "key-label", text: "Label" }),
-              el("input", { id: "key-label", name: "label", placeholder: "e.g. claude-code", autofocus: true })
+              el("label", { for: "key-label", text: "备注" }),
+              el("input", { id: "key-label", name: "label", placeholder: "例如 claude-code", autofocus: true })
             ),
             el(
               "div",
@@ -912,13 +1023,13 @@
               el("button", {
                 type: "button",
                 className: "btn btn-ghost",
-                text: "Cancel",
+                text: "取消",
                 onclick: () => {
                   state.modal = null;
                   render();
                 },
               }),
-              el("button", { type: "submit", className: "btn btn-primary", text: "Create" })
+              el("button", { type: "submit", className: "btn btn-primary", text: "创建" })
             )
           )
         )
@@ -933,27 +1044,30 @@
         el(
           "div",
           { className: "modal" },
-          el("h3", { text: "API key created" }),
-          el("p", { className: "muted", text: "Copy this key now. It will not be shown again." }),
+          el("h3", { text: "API 密钥已创建" }),
+          el("p", { className: "muted", text: "请立即复制。关闭后将无法再次查看明文。" }),
           el("div", { className: "plaintext-key", text: plain }),
           el(
             "div",
             { className: "modal-actions" },
             el("button", {
+              type: "button",
               className: "btn",
-              text: "Copy",
+              text: "复制",
               onclick: async () => {
                 try {
                   await navigator.clipboard.writeText(plain);
-                  setFlash("Copied to clipboard");
+                  setFlash("已复制到剪贴板");
+                  render();
                 } catch (_) {
                   /* ignore */
                 }
               },
             }),
             el("button", {
+              type: "button",
               className: "btn btn-primary",
-              text: "Done",
+              text: "完成",
               onclick: () => {
                 state.modal = null;
                 render();
@@ -973,19 +1087,18 @@
         el(
           "div",
           { className: "modal" },
-          el("h3", { text: "OAuth device login" }),
-          el("p", { className: "muted", text: "Open the link and enter the code, or use the complete URL." }),
+          el("h3", { text: "OAuth 设备码登录" }),
+          el("p", { className: "muted", text: "打开链接并输入代码，或直接打开完整验证链接。" }),
           el("div", { className: "oauth-code", text: d.user_code || "—" }),
-          uri
-            ? el("p", null, el("a", { href: uri, target: "_blank", rel: "noopener", text: uri }))
-            : null,
-          el("p", { className: "muted", text: "Status: " + (m.status || "waiting") }),
+          uri ? el("p", null, el("a", { href: uri, target: "_blank", rel: "noopener", text: uri })) : null,
+          el("p", { className: "muted", text: "状态：" + (m.status || "等待授权…") }),
           el(
             "div",
             { className: "modal-actions" },
             el("button", {
+              type: "button",
               className: "btn btn-ghost",
-              text: "Cancel",
+              text: "取消",
               onclick: () => {
                 state.modal = null;
                 render();
@@ -1011,20 +1124,20 @@
     const kvPairs = [
       ["ID", log.id],
       ["Request ID", log.request_id],
-      ["Time", log.created_at],
-      ["Status", log.status_code],
-      ["Protocol", log.protocol],
-      ["Path", log.path],
-      ["Model requested", log.model_requested],
-      ["Model upstream", log.model_upstream],
-      ["Stream", log.stream ? "yes" : "no"],
-      ["Account", (log.account_label || "") + " " + (log.account_id || "")],
-      ["API key", (log.api_key_label || "") + " " + (log.api_key_id || "")],
-      ["Latency", log.latency_ms != null ? log.latency_ms + " ms" : "—"],
-      ["Tokens in/out", (log.input_tokens ?? "—") + " / " + (log.output_tokens ?? "—")],
-      ["Client IP", log.client_ip],
-      ["User agent", log.user_agent],
-      ["Error", log.error_code ? log.error_code + ": " + (log.error_message || "") : log.error_message || ""],
+      ["时间", log.created_at],
+      ["状态码", log.status_code],
+      ["协议", log.protocol],
+      ["路径", log.path],
+      ["请求模型", log.model_requested],
+      ["上游模型", log.model_upstream],
+      ["流式", log.stream ? "是" : "否"],
+      ["账号", (log.account_label || "") + " " + (log.account_id || "")],
+      ["API 密钥", (log.api_key_label || "") + " " + (log.api_key_id || "")],
+      ["耗时", log.latency_ms != null ? log.latency_ms + " ms" : "—"],
+      ["Token 入/出", (log.input_tokens ?? "—") + " / " + (log.output_tokens ?? "—")],
+      ["客户端 IP", log.client_ip],
+      ["User-Agent", log.user_agent],
+      ["错误", log.error_code ? log.error_code + ": " + (log.error_message || "") : log.error_message || ""],
     ];
 
     const body = el(
@@ -1035,10 +1148,10 @@
         { className: "kv" },
         ...kvPairs.flatMap(([k, v]) => [el("dt", { text: k }), el("dd", { text: v == null || v === "" ? "—" : String(v) })])
       ),
-      el("h4", { text: "Request body" }),
-      el("pre", { className: "body-block", text: prettyJSON(log.request_body) || "(empty)" }),
-      el("h4", { text: "Response body" }),
-      el("pre", { className: "body-block", text: prettyJSON(log.response_body) || "(empty)" })
+      el("h4", { text: "请求体" }),
+      el("pre", { className: "body-block", text: prettyJSON(log.request_body) || "（空）" }),
+      el("h4", { text: "响应体" }),
+      el("pre", { className: "body-block", text: prettyJSON(log.response_body) || "（空）" })
     );
 
     return el(
@@ -1051,8 +1164,8 @@
         el(
           "div",
           { className: "drawer-header" },
-          el("h3", { text: "Log detail" }),
-          el("button", { className: "btn btn-ghost btn-sm", text: "Close", onclick: close })
+          el("h3", { text: "日志详情" }),
+          el("button", { type: "button", className: "btn btn-ghost btn-sm", text: "关闭", onclick: close })
         ),
         body
       )
