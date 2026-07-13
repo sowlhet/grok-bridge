@@ -1,0 +1,14 @@
+services:
+  grok-bridge:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.yaml:/config/config.yaml:ro
+      - ./data:/data
+    environment:
+      GROK_BRIDGE_LISTEN: "0.0.0.0:8080"
+      GROK_BRIDGE_SQLITE_PATH: "/data/grok-bridge.db"
+      # Prefer setting this in the host env / .env rather than committing secrets.
+      GROK_BRIDGE_ADMIN_PASSWORD: "${GROK_BRIDGE_ADMIN_PASSWORD:-change-me}"
+    restart: unless-stopped
