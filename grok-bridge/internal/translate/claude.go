@@ -534,14 +534,54 @@ func claudeUsage(usage any) map[string]any {
 	return out
 }
 
+// claudeBlock tracks one open Claude content_block in a live SSE session.
+type claudeBlock struct {
+	index    int
+	kind     string // text | thinking | tool_use
+	started  bool
+	stopped  bool
+	streamed bool // true once any delta was emitted for this block
+}
+
+// ClaudeSSETranslator converts a sequence of upstream xAI Responses events into
+// Claude Messages SSE frames. One instance must be used for an entire SSE
+// session so content_block index values increment correctly and
+// response.output_item.done does not re-emit text/arguments already streamed
+// via deltas.
+//
+// Pipeline usage: create NewClaudeSSETranslator() when opening the upstream
+// stream; call Event for each xAI event; discard after message_stop.
+type ClaudeSSETranslator struct {
+	nextIndex int
+	text      *claudeBlock
+	thinking  *claudeBlock
+	tool      *claudeBlock
+}
+
+// NewClaudeSSETranslator returns a fresh per-stream translator.
+func NewClaudeSSETranslator() *ClaudeSSETranslator {
+	return &ClaudeSSETranslator{}
+}
+
 // XAIEventToClaudeSSE converts one upstream xAI Responses event into zero or
 // more Claude Messages SSE frames (event: + data: + blank line).
 //
-// eventType may be empty; when empty, type is read from data JSON.
-// This is a practical subset: message_start, content_block_start/delta/stop,
-// message_delta, message_stop. Stateful block open/close is best-effort per
-// event (callers may accumulate frames).
+// This convenience wrapper uses a one-shot translator and is fine for isolated
+// events or bare completed-response synthesis. For multi-event live streams
+// (correct block indices, no duplicate output_item.done payloads), use
+// ClaudeSSETranslator.Event on a single instance for the whole session.
 func XAIEventToClaudeSSE(eventType string, data []byte) ([][]byte, error) {
+	return NewClaudeSSETranslator().Event(eventType, data)
+}
+
+// Event converts one upstream xAI Responses event into zero or more Claude
+// Messages SSE frames, updating translator state.
+//
+// eventType may be empty; when empty, type is read from data JSON.
+func (t *ClaudeSSETranslator) Event(eventType string, data []byte) ([][]byte, error) {
+	if t == nil {
+		t = NewClaudeSSETranslator()
+	}
 	data = bytes.TrimSpace(data)
 	if len(data) == 0 {
 		return nil, nil
@@ -602,50 +642,64 @@ func XAIEventToClaudeSSE(eventType string, data []byte) ([][]byte, error) {
 		if delta == "" {
 			return nil, nil
 		}
-		// Emit content_block_start (index 0 text) + delta. Callers that already
-		// opened a text block may receive an extra start; practical bridge
-		// streams typically tolerate this, and non-stream path is separate.
-		// To keep the API pure (stateless), emit only the delta event. Tests
-		// require content_block_delta with text_delta.
-		payload := map[string]any{
+		frames := t.ensureThinkingStopped(nil)
+		frames = t.ensureBlockStart(frames, "text", nil)
+		t.markStreamed("text")
+		idx := t.blockIndex("text")
+		frames = append(frames, frameClaudeSSE("content_block_delta", map[string]any{
 			"type":  "content_block_delta",
-			"index": 0,
+			"index": idx,
 			"delta": map[string]any{
 				"type": "text_delta",
 				"text": delta,
 			},
-		}
-		return [][]byte{frameClaudeSSE("content_block_delta", payload)}, nil
+		}))
+		return frames, nil
 
 	case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
 		kind, text, ok := thinking.ExtractReasoningFromXAIEvent(root)
 		if !ok || kind != "delta" || text == "" {
 			return nil, nil
 		}
-		payload := map[string]any{
+		frames := t.ensureBlockStart(nil, "thinking", nil)
+		t.markStreamed("thinking")
+		idx := t.blockIndex("thinking")
+		frames = append(frames, frameClaudeSSE("content_block_delta", map[string]any{
 			"type":  "content_block_delta",
-			"index": 0,
+			"index": idx,
 			"delta": map[string]any{
 				"type":     "thinking_delta",
 				"thinking": text,
 			},
-		}
-		return [][]byte{frameClaudeSSE("content_block_delta", payload)}, nil
+		}))
+		return frames, nil
 
 	case "response.function_call_arguments.delta":
 		delta, _ := root["delta"].(string)
 		if delta == "" {
 			return nil, nil
 		}
-		payload := map[string]any{
+		// Tool block should already be open via output_item.added; if not, open a
+		// placeholder so deltas are not lost.
+		frames := t.ensureThinkingStopped(nil)
+		frames = t.ensureTextStopped(frames)
+		frames = t.ensureBlockStart(frames, "tool_use", map[string]any{
+			"type":  "tool_use",
+			"id":    "",
+			"name":  "",
+			"input": map[string]any{},
+		})
+		t.markStreamed("tool_use")
+		idx := t.blockIndex("tool_use")
+		frames = append(frames, frameClaudeSSE("content_block_delta", map[string]any{
 			"type":  "content_block_delta",
-			"index": 0,
+			"index": idx,
 			"delta": map[string]any{
 				"type":         "input_json_delta",
 				"partial_json": delta,
 			},
-		}
-		return [][]byte{frameClaudeSSE("content_block_delta", payload)}, nil
+		}))
+		return frames, nil
 
 	case "response.output_item.added":
 		item, _ := root["item"].(map[string]any)
@@ -658,20 +712,27 @@ func XAIEventToClaudeSSE(eventType string, data []byte) ([][]byte, error) {
 			if name == "" {
 				return nil, nil
 			}
-			payload := map[string]any{
-				"type":  "content_block_start",
-				"index": 0,
-				"content_block": map[string]any{
-					"type":  "tool_use",
-					"id":    asString(item["call_id"]),
-					"name":  name,
-					"input": map[string]any{},
-				},
-			}
-			return [][]byte{frameClaudeSSE("content_block_start", payload)}, nil
+			frames := t.ensureThinkingStopped(nil)
+			frames = t.ensureTextStopped(frames)
+			// New tool call: close any previous tool block first.
+			frames = t.ensureToolStopped(frames)
+			frames = t.ensureBlockStart(frames, "tool_use", map[string]any{
+				"type":  "tool_use",
+				"id":    asString(item["call_id"]),
+				"name":  name,
+				"input": map[string]any{},
+			})
+			return frames, nil
 		case "message":
-			// Text block start often comes via content_part.added; skip.
-			return nil, nil
+			// Text block start usually arrives via content_part.added; keep index
+			// allocation there / on first text delta.
+			return t.ensureThinkingStopped(nil), nil
+		case "reasoning":
+			frames := t.ensureBlockStart(nil, "thinking", map[string]any{
+				"type":     "thinking",
+				"thinking": "",
+			})
+			return frames, nil
 		default:
 			return nil, nil
 		}
@@ -682,98 +743,126 @@ func XAIEventToClaudeSSE(eventType string, data []byte) ([][]byte, error) {
 			return nil, nil
 		}
 		if asString(part["type"]) == "output_text" {
-			payload := map[string]any{
-				"type":  "content_block_start",
-				"index": 0,
-				"content_block": map[string]any{
-					"type": "text",
-					"text": "",
-				},
-			}
-			return [][]byte{frameClaudeSSE("content_block_start", payload)}, nil
+			frames := t.ensureThinkingStopped(nil)
+			frames = t.ensureBlockStart(frames, "text", map[string]any{
+				"type": "text",
+				"text": "",
+			})
+			return frames, nil
 		}
 		return nil, nil
 
-	case "response.content_part.done", "response.output_item.done":
-		// Optional content_block_stop; emit for function_call done.
-		if typ == "response.output_item.done" {
-			item, _ := root["item"].(map[string]any)
-			if item != nil && asString(item["type"]) == "function_call" {
-				// If arguments never streamed, emit full partial_json then stop.
-				frames := [][]byte{}
+	case "response.content_part.done":
+		part, _ := root["part"].(map[string]any)
+		if part != nil && (asString(part["type"]) == "output_text" || asString(part["type"]) == "text") {
+			return t.ensureTextStopped(nil), nil
+		}
+		return nil, nil
+
+	case "response.output_item.done":
+		item, _ := root["item"].(map[string]any)
+		if item == nil {
+			return nil, nil
+		}
+		switch asString(item["type"]) {
+		case "function_call":
+			frames := t.ensureThinkingStopped(nil)
+			frames = t.ensureTextStopped(frames)
+			// Open tool block if we never saw output_item.added.
+			if t.tool == nil || t.tool.stopped {
+				frames = t.ensureBlockStart(frames, "tool_use", map[string]any{
+					"type":  "tool_use",
+					"id":    asString(item["call_id"]),
+					"name":  asString(item["name"]),
+					"input": map[string]any{},
+				})
+			}
+			// Skip full-args re-emit when function_call_arguments.delta already
+			// streamed content (aligns with OpenAI chat translator skipping
+			// output_item.done for already-streamed payloads).
+			if t.tool != nil && !t.tool.streamed {
 				if args := asString(item["arguments"]); args != "" {
+					t.markStreamed("tool_use")
+					idx := t.blockIndex("tool_use")
 					frames = append(frames, frameClaudeSSE("content_block_delta", map[string]any{
 						"type":  "content_block_delta",
-						"index": 0,
+						"index": idx,
 						"delta": map[string]any{
 							"type":         "input_json_delta",
 							"partial_json": args,
 						},
 					}))
 				}
-				frames = append(frames, frameClaudeSSE("content_block_stop", map[string]any{
-					"type":  "content_block_stop",
-					"index": 0,
-				}))
+			}
+			frames = t.ensureToolStopped(frames)
+			return frames, nil
+
+		case "message":
+			frames := t.ensureThinkingStopped(nil)
+			// If text already streamed via output_text.delta, only stop — do not
+			// re-emit the full text (would duplicate client-side concatenation).
+			if t.text != nil && t.text.streamed {
+				frames = t.ensureTextStopped(frames)
 				return frames, nil
 			}
-			if item != nil && asString(item["type"]) == "message" {
-				// If full text arrived only at done (no deltas), emit it.
-				text := ""
-				if parts, ok := item["content"].([]any); ok {
-					var b strings.Builder
-					for _, p := range parts {
-						pm, ok := p.(map[string]any)
-						if !ok {
-							continue
-						}
-						if asString(pm["type"]) == "output_text" || asString(pm["type"]) == "text" {
-							b.WriteString(asString(pm["text"]))
-						}
-					}
-					text = b.String()
-				}
-				if text == "" {
-					return nil, nil
-				}
-				frames := [][]byte{
-					frameClaudeSSE("content_block_start", map[string]any{
-						"type":  "content_block_start",
-						"index": 0,
-						"content_block": map[string]any{
-							"type": "text",
-							"text": "",
-						},
-					}),
-					frameClaudeSSE("content_block_delta", map[string]any{
+			text := messageItemText(item)
+			if text == "" {
+				// No content and nothing streamed — still close an open empty block.
+				frames = t.ensureTextStopped(frames)
+				return frames, nil
+			}
+			frames = t.ensureBlockStart(frames, "text", map[string]any{
+				"type": "text",
+				"text": "",
+			})
+			t.markStreamed("text")
+			idx := t.blockIndex("text")
+			frames = append(frames, frameClaudeSSE("content_block_delta", map[string]any{
+				"type":  "content_block_delta",
+				"index": idx,
+				"delta": map[string]any{
+					"type": "text_delta",
+					"text": text,
+				},
+			}))
+			frames = t.ensureTextStopped(frames)
+			return frames, nil
+
+		case "reasoning":
+			// If reasoning never streamed, emit full text at done.
+			frames := [][]byte{}
+			if t.thinking == nil || !t.thinking.streamed {
+				rt := reasoningTextFromItem(item)
+				if rt != "" {
+					frames = t.ensureBlockStart(frames, "thinking", map[string]any{
+						"type":     "thinking",
+						"thinking": "",
+					})
+					t.markStreamed("thinking")
+					idx := t.blockIndex("thinking")
+					frames = append(frames, frameClaudeSSE("content_block_delta", map[string]any{
 						"type":  "content_block_delta",
-						"index": 0,
+						"index": idx,
 						"delta": map[string]any{
-							"type": "text_delta",
-							"text": text,
+							"type":     "thinking_delta",
+							"thinking": rt,
 						},
-					}),
-					frameClaudeSSE("content_block_stop", map[string]any{
-						"type":  "content_block_stop",
-						"index": 0,
-					}),
+					}))
 				}
-				return frames, nil
 			}
+			frames = t.ensureThinkingStopped(frames)
+			return frames, nil
+
+		default:
+			return nil, nil
 		}
-		if typ == "response.content_part.done" {
-			part, _ := root["part"].(map[string]any)
-			if part != nil && asString(part["type"]) == "output_text" {
-				return [][]byte{frameClaudeSSE("content_block_stop", map[string]any{
-					"type":  "content_block_stop",
-					"index": 0,
-				})}, nil
-			}
-		}
-		return nil, nil
 
 	case "response.completed", "response.incomplete":
 		resp := unwrapResponse(root)
+		frames := t.ensureThinkingStopped(nil)
+		frames = t.ensureTextStopped(frames)
+		frames = t.ensureToolStopped(frames)
+
 		_, hasTool := claudeContentFromOutput(resp["output"])
 		stop := "end_turn"
 		if hasTool {
@@ -795,10 +884,11 @@ func XAIEventToClaudeSSE(eventType string, data []byte) ([][]byte, error) {
 			},
 			"usage": usage,
 		}
-		return [][]byte{
+		frames = append(frames,
 			frameClaudeSSE("message_delta", deltaPayload),
 			frameClaudeSSE("message_stop", map[string]any{"type": "message_stop"}),
-		}, nil
+		)
+		return frames, nil
 
 	case "response.in_progress",
 		"response.output_text.done",
@@ -812,6 +902,116 @@ func XAIEventToClaudeSSE(eventType string, data []byte) ([][]byte, error) {
 	default:
 		return nil, nil
 	}
+}
+
+func messageItemText(item map[string]any) string {
+	if parts, ok := item["content"].([]any); ok {
+		var b strings.Builder
+		for _, p := range parts {
+			pm, ok := p.(map[string]any)
+			if !ok {
+				continue
+			}
+			if asString(pm["type"]) == "output_text" || asString(pm["type"]) == "text" {
+				b.WriteString(asString(pm["text"]))
+			}
+		}
+		return b.String()
+	}
+	return ""
+}
+
+func (t *ClaudeSSETranslator) block(kind string) *claudeBlock {
+	switch kind {
+	case "text":
+		return t.text
+	case "thinking":
+		return t.thinking
+	case "tool_use":
+		return t.tool
+	default:
+		return nil
+	}
+}
+
+func (t *ClaudeSSETranslator) setBlock(kind string, b *claudeBlock) {
+	switch kind {
+	case "text":
+		t.text = b
+	case "thinking":
+		t.thinking = b
+	case "tool_use":
+		t.tool = b
+	}
+}
+
+func (t *ClaudeSSETranslator) blockIndex(kind string) int {
+	if b := t.block(kind); b != nil {
+		return b.index
+	}
+	return 0
+}
+
+func (t *ClaudeSSETranslator) markStreamed(kind string) {
+	if b := t.block(kind); b != nil {
+		b.streamed = true
+	}
+}
+
+func (t *ClaudeSSETranslator) ensureBlockStart(frames [][]byte, kind string, contentBlock map[string]any) [][]byte {
+	b := t.block(kind)
+	if b != nil && b.started && !b.stopped {
+		return frames
+	}
+	// Allocate a new block (previous one of same kind already stopped, or first).
+	idx := t.nextIndex
+	t.nextIndex++
+	nb := &claudeBlock{index: idx, kind: kind, started: true}
+	t.setBlock(kind, nb)
+	if contentBlock == nil {
+		switch kind {
+		case "text":
+			contentBlock = map[string]any{"type": "text", "text": ""}
+		case "thinking":
+			contentBlock = map[string]any{"type": "thinking", "thinking": ""}
+		case "tool_use":
+			contentBlock = map[string]any{
+				"type":  "tool_use",
+				"id":    "",
+				"name":  "",
+				"input": map[string]any{},
+			}
+		}
+	}
+	return append(frames, frameClaudeSSE("content_block_start", map[string]any{
+		"type":          "content_block_start",
+		"index":         idx,
+		"content_block": contentBlock,
+	}))
+}
+
+func (t *ClaudeSSETranslator) stopBlock(frames [][]byte, kind string) [][]byte {
+	b := t.block(kind)
+	if b == nil || !b.started || b.stopped {
+		return frames
+	}
+	b.stopped = true
+	return append(frames, frameClaudeSSE("content_block_stop", map[string]any{
+		"type":  "content_block_stop",
+		"index": b.index,
+	}))
+}
+
+func (t *ClaudeSSETranslator) ensureTextStopped(frames [][]byte) [][]byte {
+	return t.stopBlock(frames, "text")
+}
+
+func (t *ClaudeSSETranslator) ensureThinkingStopped(frames [][]byte) [][]byte {
+	return t.stopBlock(frames, "thinking")
+}
+
+func (t *ClaudeSSETranslator) ensureToolStopped(frames [][]byte) [][]byte {
+	return t.stopBlock(frames, "tool_use")
 }
 
 func synthesizeClaudeSSEFromResponse(resp map[string]any) ([][]byte, error) {

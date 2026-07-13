@@ -384,6 +384,353 @@ func TestXAIEventToClaudeSSE_streamLifecycle(t *testing.T) {
 	}
 }
 
+func TestClaudeSSETranslator_noDuplicateOutputItemDoneText(t *testing.T) {
+	tr := translate.NewClaudeSSETranslator()
+
+	// Live path: deltas first, then output_item.done with full text — must not
+	// re-emit the full text (client would concatenate duplicates).
+	frames, err := tr.Event("response.output_text.delta", mustJSON(t, map[string]any{
+		"type":  "response.output_text.delta",
+		"delta": "Hello",
+	}))
+	if err != nil {
+		t.Fatalf("delta1: %v", err)
+	}
+	// First text delta should open a block (start) then emit delta.
+	var textParts []string
+	var textIndex any
+	for _, f := range frames {
+		ev, m := parseClaudeSSE(t, f)
+		switch ev {
+		case "content_block_start":
+			if m["index"] == nil {
+				t.Fatalf("start missing index: %#v", m)
+			}
+			textIndex = m["index"]
+			cb := m["content_block"].(map[string]any)
+			if cb["type"] != "text" {
+				t.Fatalf("start block: %#v", cb)
+			}
+		case "content_block_delta":
+			d := m["delta"].(map[string]any)
+			if d["type"] != "text_delta" {
+				t.Fatalf("delta type: %#v", d)
+			}
+			textParts = append(textParts, d["text"].(string))
+			if textIndex != nil && m["index"] != textIndex {
+				t.Fatalf("delta index %v != start %v", m["index"], textIndex)
+			}
+			textIndex = m["index"]
+		}
+	}
+	if len(textParts) == 0 || textParts[0] != "Hello" {
+		t.Fatalf("expected Hello delta, got %v frames=%q", textParts, frames)
+	}
+
+	frames, err = tr.Event("response.output_text.delta", mustJSON(t, map[string]any{
+		"type":  "response.output_text.delta",
+		"delta": " world",
+	}))
+	if err != nil {
+		t.Fatalf("delta2: %v", err)
+	}
+	for _, f := range frames {
+		ev, m := parseClaudeSSE(t, f)
+		if ev == "content_block_delta" {
+			d := m["delta"].(map[string]any)
+			textParts = append(textParts, d["text"].(string))
+		}
+		if ev == "content_block_start" {
+			t.Fatalf("should not re-start text block on second delta: %q", f)
+		}
+	}
+
+	// output_item.done with full concatenated text — must NOT re-emit "Hello world".
+	frames, err = tr.Event("response.output_item.done", mustJSON(t, map[string]any{
+		"type": "response.output_item.done",
+		"item": map[string]any{
+			"type": "message",
+			"content": []any{
+				map[string]any{"type": "output_text", "text": "Hello world"},
+			},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("done: %v", err)
+	}
+	for _, f := range frames {
+		ev, m := parseClaudeSSE(t, f)
+		if ev == "content_block_delta" {
+			d := m["delta"].(map[string]any)
+			t.Fatalf("unexpected re-emit of text on output_item.done: %#v frame=%q", d, f)
+		}
+		if ev == "content_block_stop" {
+			if m["index"] != textIndex {
+				t.Fatalf("stop index %v want %v", m["index"], textIndex)
+			}
+		}
+	}
+
+	got := strings.Join(textParts, "")
+	if got != "Hello world" {
+		t.Fatalf("concatenated text %q want %q (duplicated?)", got, "Hello world")
+	}
+}
+
+func TestClaudeSSETranslator_noDuplicateOutputItemDoneToolArgs(t *testing.T) {
+	tr := translate.NewClaudeSSETranslator()
+
+	frames, err := tr.Event("response.output_item.added", mustJSON(t, map[string]any{
+		"type": "response.output_item.added",
+		"item": map[string]any{
+			"type":    "function_call",
+			"call_id": "call_1",
+			"name":    "get_weather",
+		},
+	}))
+	if err != nil {
+		t.Fatalf("added: %v", err)
+	}
+	if len(frames) != 1 {
+		t.Fatalf("want tool start frame, got %d %q", len(frames), frames)
+	}
+	assertClaudeSSE(t, frames[0], "content_block_start", func(m map[string]any) {
+		if m["index"] != float64(0) {
+			t.Fatalf("tool start index: %#v", m["index"])
+		}
+		cb := m["content_block"].(map[string]any)
+		if cb["type"] != "tool_use" || cb["name"] != "get_weather" {
+			t.Fatalf("content_block: %#v", cb)
+		}
+	})
+
+	var argsParts []string
+	for _, part := range []string{`{"city":`, `"Paris"}`} {
+		frames, err = tr.Event("response.function_call_arguments.delta", mustJSON(t, map[string]any{
+			"type":  "response.function_call_arguments.delta",
+			"delta": part,
+		}))
+		if err != nil {
+			t.Fatalf("args delta: %v", err)
+		}
+		for _, f := range frames {
+			ev, m := parseClaudeSSE(t, f)
+			if ev == "content_block_delta" {
+				d := m["delta"].(map[string]any)
+				if d["type"] != "input_json_delta" {
+					t.Fatalf("delta: %#v", d)
+				}
+				argsParts = append(argsParts, d["partial_json"].(string))
+			}
+		}
+	}
+
+	// Full args at done must be skipped because deltas already streamed them.
+	frames, err = tr.Event("response.output_item.done", mustJSON(t, map[string]any{
+		"type": "response.output_item.done",
+		"item": map[string]any{
+			"type":      "function_call",
+			"call_id":   "call_1",
+			"name":      "get_weather",
+			"arguments": `{"city":"Paris"}`,
+		},
+	}))
+	if err != nil {
+		t.Fatalf("done: %v", err)
+	}
+	sawStop := false
+	for _, f := range frames {
+		ev, m := parseClaudeSSE(t, f)
+		if ev == "content_block_delta" {
+			t.Fatalf("unexpected args re-emit on output_item.done: %#v", m)
+		}
+		if ev == "content_block_stop" {
+			sawStop = true
+		}
+	}
+	if !sawStop {
+		t.Fatalf("expected content_block_stop after tool done, got %q", frames)
+	}
+	got := strings.Join(argsParts, "")
+	if got != `{"city":"Paris"}` {
+		t.Fatalf("args concat %q (duplicated?)", got)
+	}
+}
+
+func TestClaudeSSETranslator_multiBlockIndicesAndLifecycle(t *testing.T) {
+	tr := translate.NewClaudeSSETranslator()
+
+	// thinking delta → block 0
+	frames, err := tr.Event("response.reasoning_summary_text.delta", mustJSON(t, map[string]any{
+		"type":  "response.reasoning_summary_text.delta",
+		"delta": "plan",
+	}))
+	if err != nil {
+		t.Fatalf("thinking: %v", err)
+	}
+	thinkingIdx := mustFindIndex(t, frames, "thinking_delta", "thinking")
+	if thinkingIdx != 0 {
+		t.Fatalf("thinking index want 0 got %d", thinkingIdx)
+	}
+
+	// text delta should stop thinking and open index 1
+	frames, err = tr.Event("response.output_text.delta", mustJSON(t, map[string]any{
+		"type":  "response.output_text.delta",
+		"delta": "answer",
+	}))
+	if err != nil {
+		t.Fatalf("text: %v", err)
+	}
+	sawThinkingStop := false
+	textIdx := -1
+	for _, f := range frames {
+		ev, m := parseClaudeSSE(t, f)
+		switch ev {
+		case "content_block_stop":
+			if int(m["index"].(float64)) == thinkingIdx {
+				sawThinkingStop = true
+			}
+		case "content_block_start":
+			cb := m["content_block"].(map[string]any)
+			if cb["type"] == "text" {
+				textIdx = int(m["index"].(float64))
+			}
+		case "content_block_delta":
+			d := m["delta"].(map[string]any)
+			if d["type"] == "text_delta" {
+				if textIdx < 0 {
+					textIdx = int(m["index"].(float64))
+				}
+				if int(m["index"].(float64)) != textIdx {
+					t.Fatalf("text delta index mismatch")
+				}
+			}
+		}
+	}
+	if !sawThinkingStop {
+		t.Fatalf("expected thinking content_block_stop before text, frames=%q", frames)
+	}
+	if textIdx != 1 {
+		t.Fatalf("text index want 1 got %d", textIdx)
+	}
+
+	// tool call → stop text, open index 2
+	frames, err = tr.Event("response.output_item.added", mustJSON(t, map[string]any{
+		"type": "response.output_item.added",
+		"item": map[string]any{
+			"type":    "function_call",
+			"call_id": "c2",
+			"name":    "lookup",
+		},
+	}))
+	if err != nil {
+		t.Fatalf("tool added: %v", err)
+	}
+	sawTextStop := false
+	toolIdx := -1
+	for _, f := range frames {
+		ev, m := parseClaudeSSE(t, f)
+		if ev == "content_block_stop" && int(m["index"].(float64)) == textIdx {
+			sawTextStop = true
+		}
+		if ev == "content_block_start" {
+			cb := m["content_block"].(map[string]any)
+			if cb["type"] == "tool_use" {
+				toolIdx = int(m["index"].(float64))
+			}
+		}
+	}
+	if !sawTextStop {
+		t.Fatalf("expected text stop before tool start: %q", frames)
+	}
+	if toolIdx != 2 {
+		t.Fatalf("tool index want 2 got %d", toolIdx)
+	}
+
+	// completed closes any open tool block then message_delta/stop
+	frames, err = tr.Event("response.completed", mustJSON(t, map[string]any{
+		"type": "response.completed",
+		"response": map[string]any{
+			"id":    "resp_m",
+			"model": "grok-4.5",
+			"usage": map[string]any{"input_tokens": float64(1), "output_tokens": float64(1)},
+			"output": []any{
+				map[string]any{
+					"type":      "function_call",
+					"call_id":   "c2",
+					"name":      "lookup",
+					"arguments": `{}`,
+				},
+			},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("completed: %v", err)
+	}
+	sawToolStop := false
+	sawMsgDelta := false
+	sawMsgStop := false
+	for _, f := range frames {
+		ev, m := parseClaudeSSE(t, f)
+		switch ev {
+		case "content_block_stop":
+			if int(m["index"].(float64)) == toolIdx {
+				sawToolStop = true
+			}
+		case "message_delta":
+			sawMsgDelta = true
+			d := m["delta"].(map[string]any)
+			if d["stop_reason"] != "tool_use" {
+				t.Fatalf("stop_reason: %#v", d)
+			}
+		case "message_stop":
+			sawMsgStop = true
+		}
+	}
+	if !sawToolStop || !sawMsgDelta || !sawMsgStop {
+		t.Fatalf("lifecycle incomplete stop=%v delta=%v msgstop=%v frames=%q",
+			sawToolStop, sawMsgDelta, sawMsgStop, frames)
+	}
+}
+
+func mustFindIndex(t *testing.T, frames [][]byte, deltaType, thinkingOrText string) int {
+	t.Helper()
+	for _, f := range frames {
+		ev, m := parseClaudeSSE(t, f)
+		if ev == "content_block_start" {
+			cb, _ := m["content_block"].(map[string]any)
+			if cb != nil && (cb["type"] == thinkingOrText || (thinkingOrText == "thinking" && cb["type"] == "thinking")) {
+				return int(m["index"].(float64))
+			}
+		}
+		if ev == "content_block_delta" {
+			d, _ := m["delta"].(map[string]any)
+			if d != nil && d["type"] == deltaType {
+				return int(m["index"].(float64))
+			}
+		}
+	}
+	t.Fatalf("no %s among frames %q", deltaType, frames)
+	return -1
+}
+
+func parseClaudeSSE(t *testing.T, frame []byte) (event string, data map[string]any) {
+	t.Helper()
+	for _, line := range bytes.Split(frame, []byte("\n")) {
+		if bytes.HasPrefix(line, []byte("event:")) {
+			event = string(bytes.TrimSpace(bytes.TrimPrefix(line, []byte("event:"))))
+		}
+		if bytes.HasPrefix(line, []byte("data:")) {
+			payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+			data = asMap(t, payload)
+		}
+	}
+	if event == "" || data == nil {
+		t.Fatalf("bad frame %q", frame)
+	}
+	return event, data
+}
+
 func assertClaudeSSE(t *testing.T, frame []byte, wantEvent string, check func(map[string]any)) {
 	t.Helper()
 	s := string(frame)
