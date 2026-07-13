@@ -1,0 +1,2 @@
+# Example configuration for grok-bridge (stub for later tasks).
+listen: ":8080"
