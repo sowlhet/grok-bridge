@@ -1,2 +1,33 @@
-# Example configuration for grok-bridge (stub for later tasks).
-listen: ":8080"
+# Example configuration for grok-bridge.
+# Prefer env overrides for secrets: GROK_BRIDGE_ADMIN_PASSWORD, GROK_BRIDGE_LISTEN, GROK_BRIDGE_SQLITE_PATH.
+
+server:
+  listen: "0.0.0.0:8080"
+  # admin_listen: "127.0.0.1:8081"
+
+admin:
+  password: "change-me"   # prefer env GROK_BRIDGE_ADMIN_PASSWORD
+  session_ttl: 24h
+
+data:
+  sqlite_path: "./data/grok-bridge.db"
+
+proxy:
+  retry:
+    max_account_switches: 2
+    max_transient_retries: 2
+  log_bodies: "errors_only"
+  log_retention_days: 30
+  unknown_model: "passthrough"  # or strict
+
+models:
+  - id: grok-4.5
+  - id: grok-4.3
+  - id: grok-3-mini
+
+aliases:
+  "claude-sonnet-4-20250514": "grok-4.5"
+  "gpt-5": "grok-4.5"
+
+xai:
+  # base_url usually empty; resolve like CPA for Build/OAuth
