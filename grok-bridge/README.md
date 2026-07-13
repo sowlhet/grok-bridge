@@ -115,4 +115,25 @@ go build -o /tmp/grok-bridge ./cmd/server
 go build -o /tmp/grok-bridge-login ./cmd/login
 ```
 
+### Automated smoke (no real xAI)
+
+`scripts/smoke.sh` boots a temp server, checks healthz, admin login, key create, `/v1/models` 401/200, and dashboard:
+
+```bash
+./scripts/smoke.sh
+# optional: SMOKE_PORT=18081 SMOKE_KEEP_TMP=1 ./scripts/smoke.sh
+```
+
+### Manual verification checklist
+
+Use after deploy or when wiring a real xAI account:
+
+1. Start server with admin password set (`config.yaml` or `GROK_BRIDGE_ADMIN_PASSWORD`)
+2. Open `http://127.0.0.1:8080/admin`, log in
+3. Import sample xAI JSON (Accounts → Import) or run `go run ./cmd/login -config config.yaml`
+4. Create an API key; copy the one-time `gb_…` plaintext
+5. `curl -H "Authorization: Bearer gb_..." http://127.0.0.1:8080/v1/models` → 200 list
+6. With a live account: one Claude Code chat (`ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY`) and/or one Codex chat (`OPENAI_BASE_URL` / `OPENAI_API_KEY`)
+7. Confirm a request log row under Logs and non-zero counts on the dashboard
+
 See `config.example.yaml` for the full configuration surface.
