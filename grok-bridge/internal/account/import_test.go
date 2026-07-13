@@ -198,3 +198,21 @@ func TestUpsertRequiresIdentity(t *testing.T) {
 		t.Fatal("expected error when email and sub both empty")
 	}
 }
+
+func TestImportRejectsIllegalTokenEndpoint(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	raw := []byte(`{"type":"xai","access_token":"a1","refresh_token":"r1","email":"evil@x.ai","sub":"s-evil","token_endpoint":"https://evil.example/oauth/token"}`)
+	if _, err := store.UpsertFromOAuthJSON(ctx, raw, true); err == nil {
+		t.Fatal("expected UpsertFromOAuthJSON to reject non-xAI token_endpoint")
+	}
+	arr := []byte(`[{"type":"xai","access_token":"a1","refresh_token":"r1","email":"evil2@x.ai","sub":"s-evil2","token_endpoint":"http://auth.x.ai/oauth/token"}]`)
+	if _, _, err := store.ImportMany(ctx, arr, true); err == nil {
+		t.Fatal("expected ImportMany to reject non-HTTPS token_endpoint")
+	}
+	// Empty token_endpoint remains allowed (discover on refresh).
+	ok := []byte(`{"type":"xai","access_token":"a1","refresh_token":"r1","email":"ok@x.ai","sub":"s-ok"}`)
+	if _, err := store.UpsertFromOAuthJSON(ctx, ok, true); err != nil {
+		t.Fatalf("empty token_endpoint should be allowed: %v", err)
+	}
+}

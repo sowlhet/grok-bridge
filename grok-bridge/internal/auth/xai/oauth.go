@@ -101,9 +101,16 @@ func (c *Client) requestDeviceCode(ctx context.Context, deviceAuthorizationEndpo
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	deviceAuthorizationEndpoint = strings.TrimSpace(deviceAuthorizationEndpoint)
-	if deviceAuthorizationEndpoint == "" {
-		return nil, fmt.Errorf("xai device code: device authorization endpoint is required")
+	deviceAuthorizationEndpoint, err := ValidateOAuthEndpoint(deviceAuthorizationEndpoint, "device_authorization_endpoint")
+	if err != nil {
+		return nil, err
+	}
+	// tokenEndpoint is stored on the response for later poll; validate when non-empty.
+	if strings.TrimSpace(tokenEndpoint) != "" {
+		tokenEndpoint, err = ValidateOAuthEndpoint(tokenEndpoint, "token_endpoint")
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	form := url.Values{
@@ -165,6 +172,11 @@ func (c *Client) PollTokenOnce(ctx context.Context, deviceCode, tokenEndpoint st
 			return nil, false, derr
 		}
 		tokenEndpoint = discovery.TokenEndpoint
+	} else {
+		tokenEndpoint, err = ValidateOAuthEndpoint(tokenEndpoint, "token_endpoint")
+		if err != nil {
+			return nil, false, err
+		}
 	}
 	token, pollErr, _, shouldContinue := c.exchangeDeviceCode(ctx, tokenEndpoint, deviceCode, defaultPollInterval)
 	if token != nil {
@@ -192,6 +204,12 @@ func (c *Client) PollToken(ctx context.Context, deviceCode *DeviceCodeResponse) 
 			return nil, err
 		}
 		tokenEndpoint = discovery.TokenEndpoint
+	} else {
+		var err error
+		tokenEndpoint, err = ValidateOAuthEndpoint(tokenEndpoint, "token_endpoint")
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	interval := time.Duration(deviceCode.Interval) * time.Second
@@ -238,13 +256,17 @@ func (c *Client) PollToken(ctx context.Context, deviceCode *DeviceCodeResponse) 
 // exchangeDeviceCode attempts to exchange a device code for tokens.
 // Returns (token, error, nextInterval, shouldContinue).
 func (c *Client) exchangeDeviceCode(ctx context.Context, tokenEndpoint, deviceCode string, interval time.Duration) (*TokenData, error, time.Duration, bool) {
+	tokenEndpoint, err := ValidateOAuthEndpoint(tokenEndpoint, "token_endpoint")
+	if err != nil {
+		return nil, err, interval, false
+	}
 	form := url.Values{
 		"grant_type":  {DeviceCodeGrantType},
 		"device_code": {strings.TrimSpace(deviceCode)},
 		"client_id":   {ClientID},
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSpace(tokenEndpoint), strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenEndpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("xai device token: create request: %w", err), interval, false
 	}
@@ -321,6 +343,12 @@ func (c *Client) Refresh(ctx context.Context, tokenEndpoint, refreshToken string
 			return nil, err
 		}
 		tokenEndpoint = discovery.TokenEndpoint
+	} else {
+		var err error
+		tokenEndpoint, err = ValidateOAuthEndpoint(tokenEndpoint, "token_endpoint")
+		if err != nil {
+			return nil, err
+		}
 	}
 	tokenEndpoint = strings.TrimSpace(tokenEndpoint)
 
@@ -336,7 +364,11 @@ func (c *Client) postTokenForm(ctx context.Context, tokenEndpoint string, form u
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSpace(tokenEndpoint), strings.NewReader(form.Encode()))
+	tokenEndpoint, err := ValidateOAuthEndpoint(tokenEndpoint, "token_endpoint")
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenEndpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("xai token request: create request: %w", err)
 	}

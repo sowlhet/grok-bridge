@@ -94,13 +94,13 @@ func (p *Pipeline) Handle(ctx context.Context, in Inbound, w http.ResponseWriter
 		rec.AccountLabel = accountLabel
 		rec.ModelUpstream = upstream
 		if shouldLogBodies(p.LogBodies, finalStatus) {
-			rec.RequestBody = string(in.Body)
+			rec.RequestBody = ScrubSecrets(string(in.Body))
 			// Cap response body log size to avoid huge SSE dumps.
+			respBody := string(finalResp)
 			if len(finalResp) > 64*1024 {
-				rec.ResponseBody = string(finalResp[:64*1024]) + "…(truncated)"
-			} else {
-				rec.ResponseBody = string(finalResp)
+				respBody = string(finalResp[:64*1024]) + "…(truncated)"
 			}
+			rec.ResponseBody = ScrubSecrets(respBody)
 		}
 		if p.Logs != nil {
 			_ = p.Logs.Insert(ctx, rec)

@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
+
+	xaiauth "github.com/wlhet/grok-bridge/internal/auth/xai"
 )
 
 // oauthJSON is the CLIProxyAPI-compatible xAI credential shape.
@@ -24,6 +27,15 @@ type oauthJSON struct {
 	TokenEndpoint string `json:"token_endpoint"`
 }
 
+// validateTokenEndpoint rejects non-empty token_endpoint values that fail OAuth SSRF checks.
+func validateTokenEndpoint(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	return xaiauth.ValidateOAuthEndpoint(raw, "token_endpoint")
+}
+
 // UpsertFromOAuthJSON imports a single CPA-compatible OAuth JSON object.
 // enable sets status to active when true, disabled when false.
 // Upsert key: email if non-empty, else subject.
@@ -35,6 +47,11 @@ func (s *Store) UpsertFromOAuthJSON(ctx context.Context, raw []byte, enable bool
 	if fields.Type != "" && fields.Type != "xai" {
 		return Account{}, fmt.Errorf("unsupported account type %q (want xai)", fields.Type)
 	}
+	ep, err := validateTokenEndpoint(fields.TokenEndpoint)
+	if err != nil {
+		return Account{}, err
+	}
+	fields.TokenEndpoint = ep
 	a, _, err := s.upsertAccount(ctx, fields, enable)
 	return a, err
 }
@@ -64,6 +81,11 @@ func (s *Store) ImportMany(ctx context.Context, payload []byte, enable bool) (in
 		if fields.Type != "" && fields.Type != "xai" {
 			return inserted, updated, fmt.Errorf("import item %d: unsupported type %q", i, fields.Type)
 		}
+		ep, err := validateTokenEndpoint(fields.TokenEndpoint)
+		if err != nil {
+			return inserted, updated, fmt.Errorf("import item %d: %w", i, err)
+		}
+		fields.TokenEndpoint = ep
 		_, isNew, err := s.upsertAccount(ctx, fields, enable)
 		if err != nil {
 			return inserted, updated, fmt.Errorf("import item %d: %w", i, err)

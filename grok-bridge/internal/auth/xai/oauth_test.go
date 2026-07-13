@@ -170,13 +170,14 @@ func TestPollTokenHandlesPendingThenSuccess(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := &Client{HTTP: server.Client()}
+	c := &Client{HTTP: rewriteHostClient(server.URL)}
 	tokenData, err := c.PollToken(context.Background(), &DeviceCodeResponse{
 		DeviceCode:    "device-abc",
 		UserCode:      "ABCD-1234",
 		ExpiresIn:     60,
 		Interval:      1,
-		TokenEndpoint: server.URL,
+		// Must be a validated x.ai host; rewriteHostClient maps auth.x.ai → test server.
+		TokenEndpoint: "https://auth.x.ai/oauth2/token",
 	})
 	if err != nil {
 		t.Fatalf("PollToken() error = %v", err)
@@ -225,8 +226,8 @@ func TestRefreshPostsGrantTypeAndClientID(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := &Client{HTTP: server.Client()}
-	tokenData, err := c.Refresh(context.Background(), server.URL, "old-refresh")
+	c := &Client{HTTP: rewriteHostClient(server.URL)}
+	tokenData, err := c.Refresh(context.Background(), "https://auth.x.ai/oauth2/token", "old-refresh")
 	if err != nil {
 		t.Fatalf("Refresh() error = %v", err)
 	}
@@ -244,6 +245,23 @@ func TestRefreshPostsGrantTypeAndClientID(t *testing.T) {
 	}
 	if gotForm.Get("refresh_token") != "old-refresh" {
 		t.Fatalf("refresh_token = %q, want old-refresh", gotForm.Get("refresh_token"))
+	}
+}
+
+func TestRefreshRejectsIllegalEndpoint(t *testing.T) {
+	c := &Client{HTTP: http.DefaultClient}
+	if _, err := c.Refresh(context.Background(), "https://evil.example/token", "rt"); err == nil {
+		t.Fatal("expected Refresh to reject non-xAI token_endpoint")
+	}
+	if _, err := c.Refresh(context.Background(), "http://auth.x.ai/oauth2/token", "rt"); err == nil {
+		t.Fatal("expected Refresh to reject non-HTTPS token_endpoint")
+	}
+}
+
+func TestPollTokenOnceRejectsIllegalEndpoint(t *testing.T) {
+	c := &Client{HTTP: http.DefaultClient}
+	if _, _, err := c.PollTokenOnce(context.Background(), "device", "https://169.254.169.254/latest"); err == nil {
+		t.Fatal("expected PollTokenOnce to reject SSRF-like endpoint")
 	}
 }
 
