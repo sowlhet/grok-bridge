@@ -21,6 +21,7 @@ import (
 	xai "github.com/wlhet/grok-bridge/internal/executor/xai"
 	"github.com/wlhet/grok-bridge/internal/logging"
 	"github.com/wlhet/grok-bridge/internal/models"
+	rt "github.com/wlhet/grok-bridge/internal/runtime"
 	"github.com/wlhet/grok-bridge/internal/translate"
 )
 
@@ -37,6 +38,8 @@ type Pipeline struct {
 	Logs         *logging.RequestLogStore
 	Retry        config.RetryConfig
 	LogBodies    string
+	// Limiter is optional global/per-account concurrency gate.
+	Limiter *rt.Limiter
 }
 
 // Inbound is a normalized client request ready for pipeline handling.
@@ -168,6 +171,16 @@ func (p *Pipeline) Handle(ctx context.Context, in Inbound, w http.ResponseWriter
 			accountLabel = acc.Email
 		}
 
+		// Concurrency gate (global + per-account). Held for the full upstream call.
+		release, aerr := p.acquire(ctx, acc.ID)
+		if aerr != nil {
+			finalStatus = http.StatusServiceUnavailable
+			finalErrCode = "concurrency_limit"
+			finalErrMsg = aerr.Error()
+			writeJSONError(w, finalStatus, finalErrCode, finalErrMsg)
+			return aerr
+		}
+
 		// Proactive refresh when near expiry.
 		if p.nearExpiry(*acc) {
 			if refreshed, rerr := p.refreshAccount(ctx, acc); rerr == nil {
@@ -178,6 +191,7 @@ func (p *Pipeline) Handle(ctx context.Context, in Inbound, w http.ResponseWriter
 
 		resp, err := p.XAI.DoResponses(ctx, *acc, xaiBody, in.Stream)
 		if err != nil {
+			release()
 			// Network/transport error: treat as switchable transient.
 			finalErrCode = "upstream_error"
 			finalErrMsg = err.Error()
@@ -199,6 +213,7 @@ func (p *Pipeline) Handle(ctx context.Context, in Inbound, w http.ResponseWriter
 			_ = resp.Body.Close()
 			refreshed, rerr := p.refreshAccount(ctx, acc)
 			if rerr != nil {
+				release()
 				_ = p.Accounts.MarkError(ctx, acc.ID, "401 refresh failed: "+rerr.Error())
 				finalStatus = http.StatusUnauthorized
 				finalErrCode = "auth_error"
@@ -215,6 +230,7 @@ func (p *Pipeline) Handle(ctx context.Context, in Inbound, w http.ResponseWriter
 			// Retry once with refreshed token.
 			resp2, err2 := p.XAI.DoResponses(ctx, *refreshed, xaiBody, in.Stream)
 			if err2 != nil {
+				release()
 				_ = p.Accounts.MarkError(ctx, acc.ID, "401 retry failed: "+err2.Error())
 				finalStatus = http.StatusBadGateway
 				finalErrCode = "upstream_error"
@@ -230,6 +246,7 @@ func (p *Pipeline) Handle(ctx context.Context, in Inbound, w http.ResponseWriter
 			if resp2.StatusCode == http.StatusUnauthorized {
 				bodySnippet2, _ := io.ReadAll(io.LimitReader(resp2.Body, 4096))
 				_ = resp2.Body.Close()
+				release()
 				_ = p.Accounts.MarkError(ctx, acc.ID, "401 after refresh")
 				finalStatus = http.StatusUnauthorized
 				finalErrCode = "auth_error"
@@ -258,6 +275,7 @@ func (p *Pipeline) Handle(ctx context.Context, in Inbound, w http.ResponseWriter
 		if status == http.StatusTooManyRequests || status >= 500 {
 			bodySnippet, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 			_ = resp.Body.Close()
+			release()
 			finalStatus = status
 			finalErrCode = "upstream_error"
 			finalErrMsg = fmt.Sprintf("upstream status %d", status)
@@ -275,6 +293,7 @@ func (p *Pipeline) Handle(ctx context.Context, in Inbound, w http.ResponseWriter
 		if status >= 400 {
 			bodyBytes, _ := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
+			release()
 			finalStatus = status
 			finalErrCode = "upstream_error"
 			finalErrMsg = fmt.Sprintf("upstream status %d", status)
@@ -289,6 +308,7 @@ func (p *Pipeline) Handle(ctx context.Context, in Inbound, w http.ResponseWriter
 		if in.Stream {
 			finalStatus, finalResp, inputTokens, outputTokens, err = p.writeStream(w, in.Protocol, resp)
 			_ = resp.Body.Close()
+			release()
 			if err != nil {
 				if finalStatus == 0 {
 					finalStatus = http.StatusBadGateway
@@ -302,6 +322,7 @@ func (p *Pipeline) Handle(ctx context.Context, in Inbound, w http.ResponseWriter
 
 		bodyBytes, err := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
+		release()
 		if err != nil {
 			finalStatus = http.StatusBadGateway
 			finalErrCode = "upstream_error"
@@ -675,3 +696,11 @@ func writeJSONError(w http.ResponseWriter, status int, code, msg string) {
 		},
 	})
 }
+
+func (p *Pipeline) acquire(ctx context.Context, accountID string) (func(), error) {
+	if p.Limiter == nil {
+		return func() {}, nil
+	}
+	return p.Limiter.Acquire(ctx, accountID)
+}
+

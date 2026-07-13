@@ -18,6 +18,14 @@ data:
   sqlite_path: "./data/grok-bridge.db"
 
 proxy:
+  # Optional upstream proxy for xAI/OAuth (http://127.0.0.1:7890 or socks5://...).
+  # Empty = use HTTP(S)_PROXY env if set. Or: GROK_BRIDGE_HTTP_PROXY=...
+  http_proxy: ""
+  # Account scheduling: round_robin | weighted (weight editable per account in admin UI)
+  scheduling: "round_robin"
+  # Concurrency gates (0 = unlimited)
+  max_concurrency: 0
+  account_concurrency: 0
   retry:
     max_account_switches: 2
     max_transient_retries: 2

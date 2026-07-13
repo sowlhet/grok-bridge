@@ -324,6 +324,7 @@ func (s *Server) handleAdminPatchAccount(w http.ResponseWriter, r *http.Request)
 	var body struct {
 		Status *string `json:"status"`
 		Label  *string `json:"label"`
+		Weight *int    `json:"weight"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
@@ -348,6 +349,16 @@ func (s *Server) handleAdminPatchAccount(w http.ResponseWriter, r *http.Request)
 	}
 	if body.Label != nil {
 		if err := s.accounts.SetLabel(r.Context(), id, *body.Label); err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+	}
+	if body.Weight != nil {
+		if err := s.accounts.SetWeight(r.Context(), id, *body.Weight); err != nil {
 			if strings.Contains(err.Error(), "not found") {
 				writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
 				return
@@ -711,19 +722,34 @@ func (s *Server) handleAdminGetLog(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAdminGetSettings(w http.ResponseWriter, r *http.Request) {
 	logBodies, retention := s.loadRuntimeSettings(r)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"log_bodies":         logBodies,
-		"retention":          retention,
-		"log_retention_days": retention,
-	})
+	s.mu.Lock()
+	out := map[string]any{
+		"log_bodies":           logBodies,
+		"retention":            retention,
+		"log_retention_days":   retention,
+		"http_proxy":           s.httpProxy,
+		"scheduling":           s.scheduling,
+		"max_concurrency":      s.maxConcurrency,
+		"account_concurrency":  s.accountConcurrency,
+		"max_account_switches": s.maxAccountSwitches,
+		"max_transient_retries": s.maxTransientRetries,
+	}
+	s.mu.Unlock()
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleAdminPutSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		LogBodies     *string `json:"log_bodies"`
-		Retention     *int    `json:"retention"`
-		Retention2    *int    `json:"log_retention_days"`
-		AdminPassword *string `json:"admin_password"`
+		LogBodies            *string `json:"log_bodies"`
+		Retention            *int    `json:"retention"`
+		Retention2           *int    `json:"log_retention_days"`
+		AdminPassword        *string `json:"admin_password"`
+		HTTPProxy            *string `json:"http_proxy"`
+		Scheduling           *string `json:"scheduling"`
+		MaxConcurrency       *int    `json:"max_concurrency"`
+		AccountConcurrency   *int    `json:"account_concurrency"`
+		MaxAccountSwitches   *int    `json:"max_account_switches"`
+		MaxTransientRetries  *int    `json:"max_transient_retries"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
@@ -758,6 +784,106 @@ func (s *Server) handleAdminPutSettings(w http.ResponseWriter, r *http.Request) 
 		s.mu.Unlock()
 		_ = s.persistSetting(r, "log_retention_days", strconv.Itoa(*ret))
 	}
+	if body.HTTPProxy != nil {
+		proxy := strings.TrimSpace(*body.HTTPProxy)
+		s.mu.Lock()
+		s.httpProxy = proxy
+		s.mu.Unlock()
+		_ = s.persistSetting(r, "http_proxy", proxy)
+		if s.onProxySettings != nil {
+			s.onProxySettings(ProxySettings{
+				HTTPProxy:           proxy,
+				Scheduling:          s.scheduling,
+				MaxConcurrency:      s.maxConcurrency,
+				AccountConcurrency:  s.accountConcurrency,
+				MaxAccountSwitches:  s.maxAccountSwitches,
+				MaxTransientRetries: s.maxTransientRetries,
+			})
+		}
+	}
+	if body.Scheduling != nil {
+		mode := strings.TrimSpace(*body.Scheduling)
+		switch mode {
+		case "round_robin", "weighted":
+		default:
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid scheduling"})
+			return
+		}
+		s.mu.Lock()
+		s.scheduling = mode
+		s.mu.Unlock()
+		_ = s.persistSetting(r, "scheduling", mode)
+		if s.onProxySettings != nil {
+			s.mu.Lock()
+			ps := s.snapshotProxySettingsLocked()
+			s.mu.Unlock()
+			s.onProxySettings(ps)
+		}
+	}
+	if body.MaxConcurrency != nil {
+		if *body.MaxConcurrency < 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid max_concurrency"})
+			return
+		}
+		s.mu.Lock()
+		s.maxConcurrency = *body.MaxConcurrency
+		s.mu.Unlock()
+		_ = s.persistSetting(r, "max_concurrency", strconv.Itoa(*body.MaxConcurrency))
+		if s.onProxySettings != nil {
+			s.mu.Lock()
+			ps := s.snapshotProxySettingsLocked()
+			s.mu.Unlock()
+			s.onProxySettings(ps)
+		}
+	}
+	if body.AccountConcurrency != nil {
+		if *body.AccountConcurrency < 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid account_concurrency"})
+			return
+		}
+		s.mu.Lock()
+		s.accountConcurrency = *body.AccountConcurrency
+		s.mu.Unlock()
+		_ = s.persistSetting(r, "account_concurrency", strconv.Itoa(*body.AccountConcurrency))
+		if s.onProxySettings != nil {
+			s.mu.Lock()
+			ps := s.snapshotProxySettingsLocked()
+			s.mu.Unlock()
+			s.onProxySettings(ps)
+		}
+	}
+	if body.MaxAccountSwitches != nil {
+		if *body.MaxAccountSwitches < 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid max_account_switches"})
+			return
+		}
+		s.mu.Lock()
+		s.maxAccountSwitches = *body.MaxAccountSwitches
+		s.mu.Unlock()
+		_ = s.persistSetting(r, "max_account_switches", strconv.Itoa(*body.MaxAccountSwitches))
+		if s.onProxySettings != nil {
+			s.mu.Lock()
+			ps := s.snapshotProxySettingsLocked()
+			s.mu.Unlock()
+			s.onProxySettings(ps)
+		}
+	}
+	if body.MaxTransientRetries != nil {
+		if *body.MaxTransientRetries < 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid max_transient_retries"})
+			return
+		}
+		s.mu.Lock()
+		s.maxTransientRetries = *body.MaxTransientRetries
+		s.mu.Unlock()
+		_ = s.persistSetting(r, "max_transient_retries", strconv.Itoa(*body.MaxTransientRetries))
+		if s.onProxySettings != nil {
+			s.mu.Lock()
+			ps := s.snapshotProxySettingsLocked()
+			s.mu.Unlock()
+			s.onProxySettings(ps)
+		}
+	}
 	if body.AdminPassword != nil {
 		pw := strings.TrimSpace(*body.AdminPassword)
 		if pw == "" {
@@ -775,12 +901,21 @@ func (s *Server) handleAdminPutSettings(w http.ResponseWriter, r *http.Request) 
 		_ = s.persistSetting(r, "admin_password", pw)
 	}
 	logBodies, retention := s.loadRuntimeSettings(r)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"log_bodies":         logBodies,
-		"retention":          retention,
-		"log_retention_days": retention,
-		"admin_password_set": true,
-	})
+	s.mu.Lock()
+	out := map[string]any{
+		"log_bodies":            logBodies,
+		"retention":             retention,
+		"log_retention_days":    retention,
+		"admin_password_set":    true,
+		"http_proxy":            s.httpProxy,
+		"scheduling":            s.scheduling,
+		"max_concurrency":       s.maxConcurrency,
+		"account_concurrency":   s.accountConcurrency,
+		"max_account_switches":  s.maxAccountSwitches,
+		"max_transient_retries": s.maxTransientRetries,
+	}
+	s.mu.Unlock()
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) loadRuntimeSettings(r *http.Request) (logBodies string, retention int) {

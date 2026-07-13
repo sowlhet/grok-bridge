@@ -21,7 +21,9 @@ import (
 	xai "github.com/wlhet/grok-bridge/internal/executor/xai"
 	"github.com/wlhet/grok-bridge/internal/logging"
 	"github.com/wlhet/grok-bridge/internal/models"
+	"github.com/wlhet/grok-bridge/internal/httpproxy"
 	"github.com/wlhet/grok-bridge/internal/pipeline"
+	rt "github.com/wlhet/grok-bridge/internal/runtime"
 )
 
 func main() {
@@ -68,29 +70,51 @@ func main() {
 			cfg.Proxy.LogRetentionDays = n
 		}
 	}
+	if v, ok := loadSetting(ctx, db, "http_proxy"); ok {
+		cfg.Proxy.HTTPProxy = v
+	}
+	if v, ok := loadSetting(ctx, db, "scheduling"); ok && v != "" {
+		cfg.Proxy.Scheduling = v
+	}
+	if v, ok := loadSetting(ctx, db, "max_concurrency"); ok && v != "" {
+		if n, err := parsePositiveInt(v); err == nil {
+			cfg.Proxy.MaxConcurrency = n
+		}
+	}
+	if v, ok := loadSetting(ctx, db, "account_concurrency"); ok && v != "" {
+		if n, err := parsePositiveInt(v); err == nil {
+			cfg.Proxy.AccountConcurrency = n
+		}
+	}
+	if v, ok := loadSetting(ctx, db, "max_account_switches"); ok && v != "" {
+		if n, err := parsePositiveInt(v); err == nil {
+			cfg.Proxy.Retry.MaxAccountSwitches = n
+		}
+	}
+	if v, ok := loadSetting(ctx, db, "max_transient_retries"); ok && v != "" {
+		if n, err := parsePositiveInt(v); err == nil {
+			cfg.Proxy.Retry.MaxTransientRetries = n
+		}
+	}
 
 	accStore := &account.Store{DB: db}
 	keyStore := &access.KeyStore{DB: db}
 	logStore := &logging.RequestLogStore{DB: db}
 	catalog := models.NewFromConfig(cfg)
-	picker := &account.Picker{Store: accStore}
+	picker := &account.Picker{Store: accStore, Scheduling: cfg.Proxy.Scheduling}
 
-	// Upstream HTTP: no overall Timeout so SSE streams can run long; bound headers.
-	upstreamTransport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-		ResponseHeaderTimeout: 120 * time.Second,
+	upstreamClient, err := httpproxy.NewClient(cfg.Proxy.HTTPProxy, 120*time.Second)
+	if err != nil {
+		log.Fatalf("upstream http client: %v", err)
 	}
-	upstreamClient := &http.Client{Transport: upstreamTransport}
-	// OAuth credential acquisition stays short-lived.
-	oauthClient := &http.Client{Timeout: 30 * time.Second}
+	oauthHTTP, err := httpproxy.NewTimeoutClient(cfg.Proxy.HTTPProxy, 30*time.Second)
+	if err != nil {
+		log.Fatalf("oauth http client: %v", err)
+	}
 
-	oauth := &xaiauth.Client{HTTP: oauthClient}
+	oauth := &xaiauth.Client{HTTP: oauthHTTP}
 	xaiClient := &xai.Client{HTTP: upstreamClient}
+	limiter := rt.NewLimiter(cfg.Proxy.MaxConcurrency, cfg.Proxy.AccountConcurrency)
 
 	p := &pipeline.Pipeline{
 		Accounts:     picker,
@@ -101,6 +125,7 @@ func main() {
 		Logs:         logStore,
 		Retry:        cfg.Proxy.Retry,
 		LogBodies:    cfg.Proxy.LogBodies,
+		Limiter:      limiter,
 	}
 
 	sessionTTL, err := time.ParseDuration(cfg.Admin.SessionTTL)
@@ -108,17 +133,46 @@ func main() {
 		sessionTTL = 24 * time.Hour
 	}
 
+	applyProxy := func(ps api.ProxySettings) {
+		picker.SetScheduling(ps.Scheduling)
+		limiter.Configure(ps.MaxConcurrency, ps.AccountConcurrency)
+		p.Retry.MaxAccountSwitches = ps.MaxAccountSwitches
+		p.Retry.MaxTransientRetries = ps.MaxTransientRetries
+		// Rebuild HTTP clients when proxy URL changes.
+		up, err := httpproxy.NewClient(ps.HTTPProxy, 120*time.Second)
+		if err != nil {
+			log.Printf("warn: invalid http_proxy %q: %v", ps.HTTPProxy, err)
+			return
+		}
+		oauthC, err := httpproxy.NewTimeoutClient(ps.HTTPProxy, 30*time.Second)
+		if err != nil {
+			log.Printf("warn: invalid http_proxy for oauth %q: %v", ps.HTTPProxy, err)
+			return
+		}
+		xaiClient.HTTP = up
+		oauth.HTTP = oauthC
+		log.Printf("proxy settings applied: scheduling=%s max_concurrency=%d account_concurrency=%d switches=%d http_proxy=%q",
+			ps.Scheduling, ps.MaxConcurrency, ps.AccountConcurrency, ps.MaxAccountSwitches, ps.HTTPProxy)
+	}
+
 	s := api.NewServer(api.ServerDeps{
-		Pipeline:         p,
-		Keys:             keyStore,
-		Catalog:          catalog,
-		Accounts:         accStore,
-		Logs:             logStore,
-		OAuth:            oauth,
-		AdminPassword:    cfg.Admin.Password,
-		AdminSessionTTL:  sessionTTL,
-		LogBodies:        cfg.Proxy.LogBodies,
-		LogRetentionDays: cfg.Proxy.LogRetentionDays,
+		Pipeline:             p,
+		Keys:                 keyStore,
+		Catalog:              catalog,
+		Accounts:             accStore,
+		Logs:                 logStore,
+		OAuth:                oauth,
+		AdminPassword:        cfg.Admin.Password,
+		AdminSessionTTL:      sessionTTL,
+		LogBodies:            cfg.Proxy.LogBodies,
+		LogRetentionDays:     cfg.Proxy.LogRetentionDays,
+		HTTPProxy:            cfg.Proxy.HTTPProxy,
+		Scheduling:           cfg.Proxy.Scheduling,
+		MaxConcurrency:       cfg.Proxy.MaxConcurrency,
+		AccountConcurrency:   cfg.Proxy.AccountConcurrency,
+		MaxAccountSwitches:   cfg.Proxy.Retry.MaxAccountSwitches,
+		MaxTransientRetries:  cfg.Proxy.Retry.MaxTransientRetries,
+		OnProxySettings:      applyProxy,
 	})
 
 	// Log retention purge: once at start, then hourly.

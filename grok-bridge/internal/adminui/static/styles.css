@@ -633,3 +633,34 @@ pre.body-block {
 .hidden {
   display: none !important;
 }
+
+.weight-input {
+  width: 72px;
+  padding: 4px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+}
+
+.settings-panel {
+  max-width: 640px;
+}
+
+.settings-section {
+  margin: 20px 0 10px;
+  font-size: 14px;
+  color: #93c5fd;
+  font-weight: 600;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+@media (max-width: 720px) {
+  .form-row { grid-template-columns: 1fr; }
+  .shell { grid-template-columns: 1fr; }
+}

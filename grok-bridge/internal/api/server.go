@@ -17,6 +17,19 @@ import (
 )
 
 // ServerDeps holds dependencies for the public and admin HTTP server.
+// ProxySettings is a runtime snapshot of scheduling/proxy knobs applied live.
+type ProxySettings struct {
+	HTTPProxy           string
+	Scheduling          string
+	MaxConcurrency      int
+	AccountConcurrency  int
+	MaxAccountSwitches  int
+	MaxTransientRetries int
+}
+
+// OnProxySettingsFunc is called when admin updates proxy/scheduling/concurrency settings.
+type OnProxySettingsFunc func(ProxySettings)
+
 type ServerDeps struct {
 	Pipeline         *pipeline.Pipeline
 	Keys             *access.KeyStore
@@ -28,6 +41,14 @@ type ServerDeps struct {
 	AdminSessionTTL  time.Duration
 	LogBodies        string
 	LogRetentionDays int
+	// Runtime proxy/scheduling (optional; defaults applied).
+	HTTPProxy           string
+	Scheduling          string
+	MaxConcurrency      int
+	AccountConcurrency  int
+	MaxAccountSwitches  int
+	MaxTransientRetries int
+	OnProxySettings     OnProxySettingsFunc
 }
 
 // Server is the HTTP front-end for grok-bridge.
@@ -50,6 +71,14 @@ type Server struct {
 	mu               sync.Mutex
 	logBodies        string
 	logRetentionDays int
+
+	httpProxy           string
+	scheduling          string
+	maxConcurrency      int
+	accountConcurrency  int
+	maxAccountSwitches  int
+	maxTransientRetries int
+	onProxySettings     OnProxySettingsFunc
 }
 
 // NewServer constructs a Server with healthz, public proxy, and admin routes.
@@ -66,20 +95,39 @@ func NewServer(deps ServerDeps) *Server {
 	if retention == 0 {
 		retention = 30
 	}
+	scheduling := deps.Scheduling
+	if scheduling == "" {
+		scheduling = "round_robin"
+	}
+	maxSwitches := deps.MaxAccountSwitches
+	if maxSwitches == 0 {
+		maxSwitches = 2
+	}
+	maxTransient := deps.MaxTransientRetries
+	if maxTransient == 0 {
+		maxTransient = 2
+	}
 	s := &Server{
-		mux:              http.NewServeMux(),
-		publicMux:        http.NewServeMux(),
-		adminMux:         http.NewServeMux(),
-		pipeline:         deps.Pipeline,
-		keys:             deps.Keys,
-		catalog:          deps.Catalog,
-		accounts:         deps.Accounts,
-		logs:             deps.Logs,
-		oauth:            deps.OAuth,
-		adminPassword:    deps.AdminPassword,
-		sessions:         newSessionStore(ttl),
-		logBodies:        logBodies,
-		logRetentionDays: retention,
+		mux:                 http.NewServeMux(),
+		publicMux:           http.NewServeMux(),
+		adminMux:            http.NewServeMux(),
+		pipeline:            deps.Pipeline,
+		keys:                deps.Keys,
+		catalog:             deps.Catalog,
+		accounts:            deps.Accounts,
+		logs:                deps.Logs,
+		oauth:               deps.OAuth,
+		adminPassword:       deps.AdminPassword,
+		sessions:            newSessionStore(ttl),
+		logBodies:           logBodies,
+		logRetentionDays:    retention,
+		httpProxy:           deps.HTTPProxy,
+		scheduling:          scheduling,
+		maxConcurrency:      deps.MaxConcurrency,
+		accountConcurrency:  deps.AccountConcurrency,
+		maxAccountSwitches:  maxSwitches,
+		maxTransientRetries: maxTransient,
+		onProxySettings:     deps.OnProxySettings,
 	}
 	// Combined mux (single-port mode).
 	s.mux.HandleFunc("GET /healthz", healthz)
@@ -177,3 +225,15 @@ func (s *Server) registerAdminUIOn(mux *http.ServeMux) {
 		fileServer.ServeHTTP(w, r)
 	})))
 }
+
+func (s *Server) snapshotProxySettingsLocked() ProxySettings {
+	return ProxySettings{
+		HTTPProxy:           s.httpProxy,
+		Scheduling:          s.scheduling,
+		MaxConcurrency:      s.maxConcurrency,
+		AccountConcurrency:  s.accountConcurrency,
+		MaxAccountSwitches:  s.maxAccountSwitches,
+		MaxTransientRetries: s.maxTransientRetries,
+	}
+}
+

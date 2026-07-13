@@ -577,7 +577,7 @@
   function renderAccounts() {
     const rows =
       state.accounts.length === 0
-        ? [el("tr", null, el("td", { colspan: "7", className: "empty", text: "暂无账号。请导入 JSON 或使用 OAuth 登录。" }))]
+        ? [el("tr", null, el("td", { colspan: "8", className: "empty", text: "暂无账号。请导入 JSON 或使用 OAuth 登录。" }))]
         : state.accounts.map((a) =>
             el(
               "tr",
@@ -585,6 +585,20 @@
               el("td", null, el("div", { text: a.label || a.email || "—" }), el("div", { className: "mono muted", text: shortId(a.id) })),
               el("td", { text: a.email || "—" }),
               el("td", null, badge(a.status)),
+              el("td", null,
+                el("input", {
+                  type: "number",
+                  className: "weight-input",
+                  min: "1",
+                  max: "1000",
+                  value: String(a.weight > 0 ? a.weight : 1),
+                  title: "轮询权重（加权模式）",
+                  onchange: (e) => {
+                    const w = Number(e.target.value) || 1;
+                    patchAccount(a.id, { weight: w });
+                  },
+                })
+              ),
               el("td", { className: "mono muted", text: a.expires_at ? fmtTime(a.expires_at) : "—" }),
               el("td", { className: "mono muted", text: a.access_token_suffix || "—" }),
               el("td", { text: a.has_refresh_token ? "有" : "无" }),
@@ -685,6 +699,7 @@
               el("th", { text: "账号" }),
               el("th", { text: "邮箱" }),
               el("th", { text: "状态" }),
+              el("th", { text: "权重" }),
               el("th", { text: "过期时间" }),
               el("th", { text: "Token" }),
               el("th", { text: "Refresh" }),
@@ -911,20 +926,35 @@
   }
 
   function renderSettings() {
-    const s = state.settings || { log_bodies: "errors_only", retention: 30 };
+    const s = state.settings || {
+      log_bodies: "errors_only",
+      retention: 30,
+      http_proxy: "",
+      scheduling: "round_robin",
+      max_concurrency: 0,
+      account_concurrency: 0,
+      max_account_switches: 2,
+      max_transient_retries: 2,
+    };
     let logBodies = s.log_bodies || "errors_only";
     let retention = s.retention ?? s.log_retention_days ?? 30;
+    let scheduling = s.scheduling || "round_robin";
 
     const form = el(
       "form",
       {
-        className: "panel",
-        style: "max-width:480px",
+        className: "panel settings-panel",
         onsubmit: (e) => {
           e.preventDefault();
           const payload = {
             log_bodies: e.target.log_bodies.value,
             retention: Number(e.target.retention.value),
+            http_proxy: e.target.http_proxy.value.trim(),
+            scheduling: e.target.scheduling.value,
+            max_concurrency: Number(e.target.max_concurrency.value) || 0,
+            account_concurrency: Number(e.target.account_concurrency.value) || 0,
+            max_account_switches: Number(e.target.max_account_switches.value) || 0,
+            max_transient_retries: Number(e.target.max_transient_retries.value) || 0,
           };
           const pw = (e.target.admin_password.value || "").trim();
           if (pw) payload.admin_password = pw;
@@ -933,6 +963,93 @@
           });
         },
       },
+      el("h3", { className: "settings-section", text: "上游网络" }),
+      el(
+        "div",
+        { className: "form-group" },
+        el("label", { for: "http_proxy", text: "HTTP/SOCKS 代理" }),
+        el("input", {
+          type: "text",
+          id: "http_proxy",
+          name: "http_proxy",
+          placeholder: "例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080，留空用环境变量",
+          value: s.http_proxy || "",
+        }),
+        el("p", { className: "muted", text: "仅影响访问 xAI / OAuth 的出站请求。保存后立即生效。" })
+      ),
+      el("h3", { className: "settings-section", text: "账号调度" }),
+      el(
+        "div",
+        { className: "form-group" },
+        el("label", { for: "scheduling", text: "轮询策略" }),
+        el(
+          "select",
+          { id: "scheduling", name: "scheduling" },
+          el("option", { value: "round_robin", text: "轮询（round_robin）", selected: scheduling === "round_robin" }),
+          el("option", { value: "weighted", text: "加权轮询（weighted）", selected: scheduling === "weighted" })
+        ),
+        el("p", { className: "muted", text: "加权模式按账号「权重」分配流量，可在账号列表中修改权重。" })
+      ),
+      el(
+        "div",
+        { className: "form-row" },
+        el(
+          "div",
+          { className: "form-group" },
+          el("label", { for: "max_account_switches", text: "失败切号次数" }),
+          el("input", {
+            type: "number",
+            id: "max_account_switches",
+            name: "max_account_switches",
+            min: "0",
+            value: String(s.max_account_switches ?? 2),
+          })
+        ),
+        el(
+          "div",
+          { className: "form-group" },
+          el("label", { for: "max_transient_retries", text: "瞬时重试（预留）" }),
+          el("input", {
+            type: "number",
+            id: "max_transient_retries",
+            name: "max_transient_retries",
+            min: "0",
+            value: String(s.max_transient_retries ?? 2),
+          })
+        )
+      ),
+      el("h3", { className: "settings-section", text: "并发限制" }),
+      el(
+        "div",
+        { className: "form-row" },
+        el(
+          "div",
+          { className: "form-group" },
+          el("label", { for: "max_concurrency", text: "全局最大并发" }),
+          el("input", {
+            type: "number",
+            id: "max_concurrency",
+            name: "max_concurrency",
+            min: "0",
+            value: String(s.max_concurrency ?? 0),
+          }),
+          el("p", { className: "muted", text: "0 = 不限制" })
+        ),
+        el(
+          "div",
+          { className: "form-group" },
+          el("label", { for: "account_concurrency", text: "单账号最大并发" }),
+          el("input", {
+            type: "number",
+            id: "account_concurrency",
+            name: "account_concurrency",
+            min: "0",
+            value: String(s.account_concurrency ?? 0),
+          }),
+          el("p", { className: "muted", text: "0 = 不限制" })
+        )
+      ),
+      el("h3", { className: "settings-section", text: "日志" }),
       el(
         "div",
         { className: "form-group" },
@@ -945,7 +1062,7 @@
             ["errors_only", "仅错误"],
             ["sample", "采样"],
             ["all", "全部"],
-          ].map(([v, t]) => el("option", { value: v, text: t, selected: logBodies === v }))
+          ].map(([v, lab]) => el("option", { value: v, text: lab, selected: logBodies === v }))
         )
       ),
       el(
@@ -960,6 +1077,7 @@
           value: String(retention),
         })
       ),
+      el("h3", { className: "settings-section", text: "安全" }),
       el(
         "div",
         { className: "form-group" },
@@ -973,7 +1091,7 @@
         }),
         el("p", {
           className: "muted",
-          text: "立即更新当前进程。若未设置环境变量 GROK_BRIDGE_ADMIN_PASSWORD，会写入数据库以便重启后生效。生产环境建议用环境变量。",
+          text: "立即更新当前进程。若未设置环境变量 GROK_BRIDGE_ADMIN_PASSWORD，会写入数据库以便重启后生效。",
         })
       ),
       el("button", { type: "submit", className: "btn btn-primary", text: "保存设置" })

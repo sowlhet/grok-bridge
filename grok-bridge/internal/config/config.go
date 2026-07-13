@@ -37,12 +37,22 @@ type DataConfig struct {
 	SQLitePath string `yaml:"sqlite_path"`
 }
 
-// ProxyConfig holds proxy behavior and logging policy.
+// ProxyConfig holds proxy behavior, scheduling, concurrency, and logging policy.
 type ProxyConfig struct {
-	Retry            RetryConfig `yaml:"retry"`
-	LogBodies        string      `yaml:"log_bodies"`
-	LogRetentionDays int         `yaml:"log_retention_days"`
-	UnknownModel     string      `yaml:"unknown_model"`
+	Retry               RetryConfig `yaml:"retry"`
+	LogBodies           string      `yaml:"log_bodies"`
+	LogRetentionDays    int         `yaml:"log_retention_days"`
+	UnknownModel        string      `yaml:"unknown_model"`
+	// HTTPProxy is an optional upstream proxy for xAI/OAuth traffic
+	// (e.g. http://127.0.0.1:7890 or socks5://127.0.0.1:1080).
+	// Empty means use environment HTTP(S)_PROXY if set.
+	HTTPProxy string `yaml:"http_proxy"`
+	// Scheduling is account selection strategy: "round_robin" (default) or "weighted".
+	Scheduling string `yaml:"scheduling"`
+	// MaxConcurrency is the global max concurrent upstream requests (0 = unlimited).
+	MaxConcurrency int `yaml:"max_concurrency"`
+	// AccountConcurrency is the per-account max concurrent upstream requests (0 = unlimited).
+	AccountConcurrency int `yaml:"account_concurrency"`
 }
 
 // RetryConfig controls account failover and transient retries.
@@ -75,9 +85,12 @@ func defaultConfig() *Config {
 				MaxAccountSwitches:  2,
 				MaxTransientRetries: 2,
 			},
-			LogBodies:        "errors_only",
-			LogRetentionDays: 30,
-			UnknownModel:     "passthrough",
+			LogBodies:          "errors_only",
+			LogRetentionDays:   30,
+			UnknownModel:       "passthrough",
+			Scheduling:         "round_robin",
+			MaxConcurrency:     0,
+			AccountConcurrency: 0,
 		},
 		Models: []ModelEntry{
 			{ID: "grok-4.5"},
@@ -134,6 +147,9 @@ func (c *Config) applyDefaults() {
 	if c.Proxy.UnknownModel == "" {
 		c.Proxy.UnknownModel = "passthrough"
 	}
+	if c.Proxy.Scheduling == "" {
+		c.Proxy.Scheduling = "round_robin"
+	}
 	if len(c.Models) == 0 {
 		c.Models = []ModelEntry{
 			{ID: "grok-4.5"},
@@ -160,6 +176,17 @@ func (c *Config) validate() error {
 	default:
 		return fmt.Errorf("proxy.unknown_model: invalid value %q", c.Proxy.UnknownModel)
 	}
+	switch c.Proxy.Scheduling {
+	case "round_robin", "weighted":
+	default:
+		return fmt.Errorf("proxy.scheduling: invalid value %q (want round_robin or weighted)", c.Proxy.Scheduling)
+	}
+	if c.Proxy.MaxConcurrency < 0 {
+		return fmt.Errorf("proxy.max_concurrency: must be >= 0")
+	}
+	if c.Proxy.AccountConcurrency < 0 {
+		return fmt.Errorf("proxy.account_concurrency: must be >= 0")
+	}
 	return nil
 }
 
@@ -177,5 +204,8 @@ func (c *Config) ApplyEnv() {
 	}
 	if v := os.Getenv("GROK_BRIDGE_SQLITE_PATH"); v != "" {
 		c.Data.SQLitePath = v
+	}
+	if v := os.Getenv("GROK_BRIDGE_HTTP_PROXY"); v != "" {
+		c.Proxy.HTTPProxy = v
 	}
 }

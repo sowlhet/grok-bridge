@@ -167,6 +167,33 @@ WHERE id = ?
 	return nil
 }
 
+// SetWeight updates the scheduling weight for an account (min 1).
+func (s *Store) SetWeight(ctx context.Context, id string, weight int) error {
+	if weight <= 0 {
+		weight = 1
+	}
+	if weight > 1000 {
+		weight = 1000
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	res, err := s.DB.ExecContext(ctx, `
+UPDATE accounts
+SET weight = ?, updated_at = ?
+WHERE id = ?
+`, weight, now, id)
+	if err != nil {
+		return fmt.Errorf("set weight: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set weight rows: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("account %q not found", id)
+	}
+	return nil
+}
+
 // Delete removes an account by id.
 func (s *Store) Delete(ctx context.Context, id string) error {
 	res, err := s.DB.ExecContext(ctx, `DELETE FROM accounts WHERE id = ?`, id)
