@@ -1,12 +1,23 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 
+	"github.com/wlhet/grok-bridge/internal/access"
+	"github.com/wlhet/grok-bridge/internal/account"
 	"github.com/wlhet/grok-bridge/internal/api"
+	xaiauth "github.com/wlhet/grok-bridge/internal/auth/xai"
 	"github.com/wlhet/grok-bridge/internal/config"
+	dbpkg "github.com/wlhet/grok-bridge/internal/db"
+	xai "github.com/wlhet/grok-bridge/internal/executor/xai"
+	"github.com/wlhet/grok-bridge/internal/logging"
+	"github.com/wlhet/grok-bridge/internal/models"
+	"github.com/wlhet/grok-bridge/internal/pipeline"
 )
 
 func main() {
@@ -19,7 +30,51 @@ func main() {
 	}
 	cfg.ApplyEnv()
 
-	s := api.NewServer(api.ServerDeps{})
-	log.Printf("listening on %s", cfg.Server.Listen)
-	log.Fatal(http.ListenAndServe(cfg.Server.Listen, s.Handler()))
+	sqlitePath := cfg.Data.SQLitePath
+	if sqlitePath == "" {
+		sqlitePath = filepath.Join("data", "grok-bridge.db")
+	}
+
+	ctx := context.Background()
+	db, err := dbpkg.Open(sqlitePath)
+	if err != nil {
+		log.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := dbpkg.Migrate(ctx, db); err != nil {
+		log.Fatalf("migrate db: %v", err)
+	}
+
+	accStore := &account.Store{DB: db}
+	keyStore := &access.KeyStore{DB: db}
+	logStore := &logging.RequestLogStore{DB: db}
+	catalog := models.NewFromConfig(cfg)
+	picker := &account.Picker{Store: accStore}
+
+	httpClient := &http.Client{}
+	oauth := &xaiauth.Client{HTTP: httpClient}
+	xaiClient := &xai.Client{HTTP: httpClient}
+
+	p := &pipeline.Pipeline{
+		Accounts:     picker,
+		AccountStore: accStore,
+		XAI:          xaiClient,
+		OAuth:        oauth,
+		Catalog:      catalog,
+		Logs:         logStore,
+		Retry:        cfg.Proxy.Retry,
+		LogBodies:    cfg.Proxy.LogBodies,
+	}
+
+	s := api.NewServer(api.ServerDeps{
+		Pipeline: p,
+		Keys:     keyStore,
+		Catalog:  catalog,
+	})
+
+	log.Printf("listening on %s (sqlite=%s)", cfg.Server.Listen, sqlitePath)
+	if err := http.ListenAndServe(cfg.Server.Listen, s.Handler()); err != nil {
+		log.Printf("server stopped: %v", err)
+		os.Exit(1)
+	}
 }
