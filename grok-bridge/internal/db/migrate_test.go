@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -25,5 +26,31 @@ func TestMigrateCreatesTables(t *testing.T) {
 		if err != nil {
 			t.Fatalf("table %s: %v", table, err)
 		}
+	}
+}
+
+func TestOpenChmodsDBFileAndBusyTimeout(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "perm.db")
+	db, err := dbpkg.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := st.Mode().Perm(); mode != 0o600 {
+		t.Fatalf("db mode=%o want 0600", mode)
+	}
+	// busy_timeout should be set (milliseconds).
+	var timeout int
+	if err := db.QueryRow(`PRAGMA busy_timeout`).Scan(&timeout); err != nil {
+		t.Fatal(err)
+	}
+	if timeout < 5000 {
+		t.Fatalf("busy_timeout=%d want >= 5000", timeout)
 	}
 }

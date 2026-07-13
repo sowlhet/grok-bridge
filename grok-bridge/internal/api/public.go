@@ -11,31 +11,31 @@ import (
 	"github.com/wlhet/grok-bridge/internal/translate"
 )
 
-// registerPublicRoutes mounts authenticated proxy endpoints on s.mux.
-func (s *Server) registerPublicRoutes() {
+// registerPublicRoutesOn mounts authenticated proxy endpoints on mux.
+func (s *Server) registerPublicRoutesOn(mux *http.ServeMux) {
 	// Claude Messages
-	s.mux.HandleFunc("POST /v1/messages", s.requireAPIKey(s.handleMessages))
-	s.mux.HandleFunc("POST /openai/v1/messages", s.requireAPIKey(s.handleMessages))
+	mux.HandleFunc("POST /v1/messages", s.requireAPIKey(s.handleMessages))
+	mux.HandleFunc("POST /openai/v1/messages", s.requireAPIKey(s.handleMessages))
 
 	// Token count (best-effort)
-	s.mux.HandleFunc("POST /v1/messages/count_tokens", s.requireAPIKey(s.handleCountTokens))
-	s.mux.HandleFunc("POST /openai/v1/messages/count_tokens", s.requireAPIKey(s.handleCountTokens))
+	mux.HandleFunc("POST /v1/messages/count_tokens", s.requireAPIKey(s.handleCountTokens))
+	mux.HandleFunc("POST /openai/v1/messages/count_tokens", s.requireAPIKey(s.handleCountTokens))
 
 	// OpenAI Chat Completions
-	s.mux.HandleFunc("POST /v1/chat/completions", s.requireAPIKey(s.handleChatCompletions))
-	s.mux.HandleFunc("POST /openai/v1/chat/completions", s.requireAPIKey(s.handleChatCompletions))
+	mux.HandleFunc("POST /v1/chat/completions", s.requireAPIKey(s.handleChatCompletions))
+	mux.HandleFunc("POST /openai/v1/chat/completions", s.requireAPIKey(s.handleChatCompletions))
 
 	// OpenAI / xAI Responses
-	s.mux.HandleFunc("POST /v1/responses", s.requireAPIKey(s.handleResponses))
-	s.mux.HandleFunc("POST /openai/v1/responses", s.requireAPIKey(s.handleResponses))
+	mux.HandleFunc("POST /v1/responses", s.requireAPIKey(s.handleResponses))
+	mux.HandleFunc("POST /openai/v1/responses", s.requireAPIKey(s.handleResponses))
 
 	// Compact — not implemented in v1
-	s.mux.HandleFunc("POST /v1/responses/compact", s.requireAPIKey(s.handleResponsesCompact))
-	s.mux.HandleFunc("POST /openai/v1/responses/compact", s.requireAPIKey(s.handleResponsesCompact))
+	mux.HandleFunc("POST /v1/responses/compact", s.requireAPIKey(s.handleResponsesCompact))
+	mux.HandleFunc("POST /openai/v1/responses/compact", s.requireAPIKey(s.handleResponsesCompact))
 
 	// Models list
-	s.mux.HandleFunc("GET /v1/models", s.requireAPIKey(s.handleModels))
-	s.mux.HandleFunc("GET /openai/v1/models", s.requireAPIKey(s.handleModels))
+	mux.HandleFunc("GET /v1/models", s.requireAPIKey(s.handleModels))
+	mux.HandleFunc("GET /openai/v1/models", s.requireAPIKey(s.handleModels))
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {

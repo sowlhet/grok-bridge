@@ -316,3 +316,35 @@ LIMIT 5
 	}
 	return st, nil
 }
+
+// DeleteOlderThan removes request_logs rows with created_at strictly before cutoff.
+// Returns the number of deleted rows.
+func (s *RequestLogStore) DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	if s == nil || s.DB == nil {
+		return 0, fmt.Errorf("log store not configured")
+	}
+	if cutoff.IsZero() {
+		return 0, fmt.Errorf("cutoff is zero")
+	}
+	// created_at is stored as RFC3339 UTC strings; compare lexicographically.
+	cutoffStr := cutoff.UTC().Format(time.RFC3339)
+	res, err := s.DB.ExecContext(ctx, `DELETE FROM request_logs WHERE created_at < ?`, cutoffStr)
+	if err != nil {
+		return 0, fmt.Errorf("delete old request_logs: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("delete old request_logs rows: %w", err)
+	}
+	return n, nil
+}
+
+// DeleteOlderThanDays deletes logs older than retentionDays.
+// retentionDays <= 0 means no purge (returns 0, nil).
+func (s *RequestLogStore) DeleteOlderThanDays(ctx context.Context, retentionDays int) (int64, error) {
+	if retentionDays <= 0 {
+		return 0, nil
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays)
+	return s.DeleteOlderThan(ctx, cutoff)
+}

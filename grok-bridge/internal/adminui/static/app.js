@@ -807,9 +807,16 @@
         style: "max-width:480px",
         onsubmit: (e) => {
           e.preventDefault();
-          saveSettings({
+          const payload = {
             log_bodies: e.target.log_bodies.value,
             retention: Number(e.target.retention.value),
+          };
+          const pw = (e.target.admin_password.value || "").trim();
+          if (pw) {
+            payload.admin_password = pw;
+          }
+          saveSettings(payload).then(() => {
+            e.target.admin_password.value = "";
           });
         },
       },
@@ -835,6 +842,22 @@
           name: "retention",
           min: "0",
           value: String(retention),
+        })
+      ),
+      el(
+        "div",
+        { className: "form-group" },
+        el("label", { for: "admin_password", text: "New admin password (optional)" }),
+        el("input", {
+          type: "password",
+          id: "admin_password",
+          name: "admin_password",
+          autocomplete: "new-password",
+          placeholder: "Leave blank to keep current",
+        }),
+        el("p", {
+          className: "muted",
+          text: "Updates the running server. If GROK_BRIDGE_ADMIN_PASSWORD is unset, also persists to the settings table across restarts. Prefer env for production secrets.",
         })
       ),
       el("button", { type: "submit", className: "btn btn-primary", text: "Save settings" })

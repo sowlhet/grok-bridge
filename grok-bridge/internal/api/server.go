@@ -32,7 +32,13 @@ type ServerDeps struct {
 
 // Server is the HTTP front-end for grok-bridge.
 type Server struct {
-	mux              *http.ServeMux
+	// mux is the combined handler (public + admin) used when admin_listen is empty.
+	mux *http.ServeMux
+	// publicMux serves healthz + proxy only (split-listen public side).
+	publicMux *http.ServeMux
+	// adminMux serves admin API + UI (and healthz) for split-listen admin side.
+	adminMux *http.ServeMux
+
 	pipeline         *pipeline.Pipeline
 	keys             *access.KeyStore
 	catalog          *models.Catalog
@@ -62,6 +68,8 @@ func NewServer(deps ServerDeps) *Server {
 	}
 	s := &Server{
 		mux:              http.NewServeMux(),
+		publicMux:        http.NewServeMux(),
+		adminMux:         http.NewServeMux(),
 		pipeline:         deps.Pipeline,
 		keys:             deps.Keys,
 		catalog:          deps.Catalog,
@@ -73,25 +81,67 @@ func NewServer(deps ServerDeps) *Server {
 		logBodies:        logBodies,
 		logRetentionDays: retention,
 	}
-	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
-	s.registerPublicRoutes()
-	s.registerAdminRoutes()
-	s.registerAdminUI()
+	// Combined mux (single-port mode).
+	s.mux.HandleFunc("GET /healthz", healthz)
+	s.registerPublicRoutesOn(s.mux)
+	s.registerAdminRoutesOn(s.mux)
+	s.registerAdminUIOn(s.mux)
+
+	// Split public mux.
+	s.publicMux.HandleFunc("GET /healthz", healthz)
+	s.registerPublicRoutesOn(s.publicMux)
+
+	// Split admin mux (healthz useful for probes on admin port too).
+	s.adminMux.HandleFunc("GET /healthz", healthz)
+	s.registerAdminRoutesOn(s.adminMux)
+	s.registerAdminUIOn(s.adminMux)
 	return s
 }
 
-// Handler returns the root HTTP handler.
+func healthz(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
+}
+
+// Handler returns the combined HTTP handler (public + admin on one port).
 func (s *Server) Handler() http.Handler { return s.mux }
 
-// registerAdminUI serves the embedded SPA at /admin/ and static assets at /admin/static/.
-func (s *Server) registerAdminUI() {
+// PublicHandler returns the public API handler (no admin routes).
+func (s *Server) PublicHandler() http.Handler { return s.publicMux }
+
+// AdminHandler returns the admin API + UI handler.
+func (s *Server) AdminHandler() http.Handler { return s.adminMux }
+
+// LogRetentionDays returns the current retention setting (for background purge).
+func (s *Server) LogRetentionDays() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.logRetentionDays == 0 {
+		return 30
+	}
+	return s.logRetentionDays
+}
+
+// SetAdminPassword updates the in-memory admin password (runtime settings).
+func (s *Server) SetAdminPassword(pw string) {
+	s.mu.Lock()
+	s.adminPassword = pw
+	s.mu.Unlock()
+}
+
+// AdminPassword returns the current admin password (for tests).
+func (s *Server) AdminPassword() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.adminPassword
+}
+
+// registerAdminUIOn serves the embedded SPA at /admin/ and static assets at /admin/static/.
+func (s *Server) registerAdminUIOn(mux *http.ServeMux) {
 	staticRoot, err := fs.Sub(adminui.Static, "static")
 	if err != nil {
 		// Should not happen with go:embed static/*; surface via empty handler.
-		s.mux.HandleFunc("GET /admin/{$}", func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc("GET /admin/{$}", func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "admin ui not available", http.StatusInternalServerError)
 		})
 		return
@@ -111,12 +161,12 @@ func (s *Server) registerAdminUI() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(data)
 	}
-	s.mux.HandleFunc("GET /admin", serveIndex)
-	s.mux.HandleFunc("GET /admin/{$}", serveIndex)
-	s.mux.HandleFunc("GET /admin/index.html", serveIndex)
+	mux.HandleFunc("GET /admin", serveIndex)
+	mux.HandleFunc("GET /admin/{$}", serveIndex)
+	mux.HandleFunc("GET /admin/index.html", serveIndex)
 
 	// Static assets under /admin/static/*
-	s.mux.Handle("GET /admin/static/", http.StripPrefix("/admin/static/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("GET /admin/static/", http.StripPrefix("/admin/static/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Prevent directory listing; FileServer handles missing files.
 		if strings.HasSuffix(r.URL.Path, "/") {
 			http.NotFound(w, r)

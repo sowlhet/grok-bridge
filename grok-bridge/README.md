@@ -19,15 +19,17 @@ It speaks Anthropic Messages and OpenAI Chat/Responses on the public side, trans
 
 ```bash
 cp config.example.yaml config.yaml
-# set admin.password (or use GROK_BRIDGE_ADMIN_PASSWORD)
+# set a strong admin.password (or export GROK_BRIDGE_ADMIN_PASSWORD)
+# Server refuses empty password and the insecure default "change-me".
 ```
 
 Useful env overrides:
 
 | Variable | Purpose |
 |----------|---------|
-| `GROK_BRIDGE_LISTEN` | Listen address (default `0.0.0.0:8080`) |
-| `GROK_BRIDGE_ADMIN_PASSWORD` | Admin password |
+| `GROK_BRIDGE_LISTEN` | Public listen address (default `0.0.0.0:8080`) |
+| `GROK_BRIDGE_ADMIN_LISTEN` | Optional admin-only listen address (split ports) |
+| `GROK_BRIDGE_ADMIN_PASSWORD` | Admin password (required; not `change-me`) |
 | `GROK_BRIDGE_SQLITE_PATH` | SQLite path |
 
 ### 2. Run the server
@@ -79,20 +81,22 @@ Responses: `POST /v1/responses`
 
 ## Admin
 
-- UI: `http://127.0.0.1:8080/admin`
+- UI: `http://127.0.0.1:8080/admin` (or the `admin_listen` host when split)
 - REST under `/admin/api/*` (session cookie after login)
 - Manage accounts, API keys, request logs, and settings
+- Optional `server.admin_listen` / `GROK_BRIDGE_ADMIN_LISTEN`: public API stays on `listen`; admin UI/API only on `admin_listen`
 
 ## Docker
 
 ```bash
 cp config.example.yaml config.yaml
-# edit config / set GROK_BRIDGE_ADMIN_PASSWORD
+export GROK_BRIDGE_ADMIN_PASSWORD='your-strong-password'   # required
 mkdir -p data
 docker compose up --build -d
 ```
 
-Compose mounts `./config.yaml` → `/config/config.yaml` and `./data` for SQLite.  
+Compose **requires** `GROK_BRIDGE_ADMIN_PASSWORD` in the environment (compose fails to start without it).  
+Mounts `./config.yaml` → `/config/config.yaml` and `./data` for SQLite.  
 The image entrypoint is the server binary with `-config /config/config.yaml`.
 
 Login CLI is not in the image; run `go run ./cmd/login` on the host against the same SQLite volume, or import accounts via the admin UI.
@@ -100,10 +104,12 @@ Login CLI is not in the image; run `go run ./cmd/login` on the host against the 
 ## Security notes
 
 - **Do not expose the public port raw on the internet.** Put a TLS reverse proxy (Caddy, nginx, Traefik) in front; prefer HTTPS only.
-- Admin password and OAuth tokens protect real Grok capacity — use a strong `GROK_BRIDGE_ADMIN_PASSWORD`, keep `config.yaml` and the SQLite file private (`data/` permissions).
+- Admin password and OAuth tokens protect real Grok capacity — use a strong `GROK_BRIDGE_ADMIN_PASSWORD`, keep `config.yaml` and the SQLite file private (DB file is created `0600`, data dir `0700`).
+- Server **refuses to start** if admin password is empty or `change-me`.
 - Client API keys are hashed at rest; treat plaintext `gb_…` keys like passwords.
-- Optional `admin_listen` / binding admin to localhost reduces remote admin surface when you terminate TLS elsewhere.
-- Request body logging (`proxy.log_bodies`) can capture prompts — keep `errors_only` or `off` in shared environments.
+- Prefer `admin_listen` bound to localhost (or a private interface) so admin is not reachable on the public port.
+- Request body logging (`proxy.log_bodies`) can capture prompts — keep `errors_only` or `off` in shared environments. Logged bodies are scrubbed for Bearer tokens, API keys, and OAuth token JSON fields.
+- Old request logs are purged hourly according to `proxy.log_retention_days`.
 - This proxy is a **bypass path** relative to official Anthropic/OpenAI endpoints: anyone with a valid bridge key and a live xAI account can spend Grok quota. Rotate keys, disable accounts, and restrict network access accordingly.
 - Health endpoint (`/healthz`) is unauthenticated and must not leak account/key material (it returns `ok` only).
 

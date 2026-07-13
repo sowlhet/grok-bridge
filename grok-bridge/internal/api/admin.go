@@ -75,30 +75,30 @@ func (ss *sessionStore) valid(token string) bool {
 	return true
 }
 
-// registerAdminRoutes mounts admin login + protected management endpoints.
-func (s *Server) registerAdminRoutes() {
+// registerAdminRoutesOn mounts admin login + protected management endpoints on mux.
+func (s *Server) registerAdminRoutesOn(mux *http.ServeMux) {
 	// Login is public within /admin/api.
-	s.mux.HandleFunc("POST /admin/api/login", s.handleAdminLogin)
+	mux.HandleFunc("POST /admin/api/login", s.handleAdminLogin)
 
 	// Protected routes.
-	s.mux.HandleFunc("GET /admin/api/dashboard", s.requireAdmin(s.handleAdminDashboard))
-	s.mux.HandleFunc("GET /admin/api/accounts", s.requireAdmin(s.handleAdminListAccounts))
-	s.mux.HandleFunc("POST /admin/api/accounts/import", s.requireAdmin(s.handleAdminImportAccounts))
-	s.mux.HandleFunc("GET /admin/api/accounts/{id}/export", s.requireAdmin(s.handleAdminExportAccount))
-	s.mux.HandleFunc("PATCH /admin/api/accounts/{id}", s.requireAdmin(s.handleAdminPatchAccount))
-	s.mux.HandleFunc("DELETE /admin/api/accounts/{id}", s.requireAdmin(s.handleAdminDeleteAccount))
-	s.mux.HandleFunc("POST /admin/api/accounts/{id}/refresh", s.requireAdmin(s.handleAdminRefreshAccount))
-	s.mux.HandleFunc("POST /admin/api/accounts/oauth/start", s.requireAdmin(s.handleAdminOAuthStart))
-	s.mux.HandleFunc("POST /admin/api/accounts/oauth/poll", s.requireAdmin(s.handleAdminOAuthPoll))
-	s.mux.HandleFunc("GET /admin/api/keys", s.requireAdmin(s.handleAdminListKeys))
-	s.mux.HandleFunc("POST /admin/api/keys", s.requireAdmin(s.handleAdminCreateKey))
-	s.mux.HandleFunc("DELETE /admin/api/keys/{id}", s.requireAdmin(s.handleAdminDeleteKey))
+	mux.HandleFunc("GET /admin/api/dashboard", s.requireAdmin(s.handleAdminDashboard))
+	mux.HandleFunc("GET /admin/api/accounts", s.requireAdmin(s.handleAdminListAccounts))
+	mux.HandleFunc("POST /admin/api/accounts/import", s.requireAdmin(s.handleAdminImportAccounts))
+	mux.HandleFunc("GET /admin/api/accounts/{id}/export", s.requireAdmin(s.handleAdminExportAccount))
+	mux.HandleFunc("PATCH /admin/api/accounts/{id}", s.requireAdmin(s.handleAdminPatchAccount))
+	mux.HandleFunc("DELETE /admin/api/accounts/{id}", s.requireAdmin(s.handleAdminDeleteAccount))
+	mux.HandleFunc("POST /admin/api/accounts/{id}/refresh", s.requireAdmin(s.handleAdminRefreshAccount))
+	mux.HandleFunc("POST /admin/api/accounts/oauth/start", s.requireAdmin(s.handleAdminOAuthStart))
+	mux.HandleFunc("POST /admin/api/accounts/oauth/poll", s.requireAdmin(s.handleAdminOAuthPoll))
+	mux.HandleFunc("GET /admin/api/keys", s.requireAdmin(s.handleAdminListKeys))
+	mux.HandleFunc("POST /admin/api/keys", s.requireAdmin(s.handleAdminCreateKey))
+	mux.HandleFunc("DELETE /admin/api/keys/{id}", s.requireAdmin(s.handleAdminDeleteKey))
 	// Also accept DELETE /admin/api/keys with body {"id":"..."} for plan's GET/POST/DELETE /keys.
-	s.mux.HandleFunc("DELETE /admin/api/keys", s.requireAdmin(s.handleAdminDeleteKeyBody))
-	s.mux.HandleFunc("GET /admin/api/logs", s.requireAdmin(s.handleAdminListLogs))
-	s.mux.HandleFunc("GET /admin/api/logs/{id}", s.requireAdmin(s.handleAdminGetLog))
-	s.mux.HandleFunc("GET /admin/api/settings", s.requireAdmin(s.handleAdminGetSettings))
-	s.mux.HandleFunc("PUT /admin/api/settings", s.requireAdmin(s.handleAdminPutSettings))
+	mux.HandleFunc("DELETE /admin/api/keys", s.requireAdmin(s.handleAdminDeleteKeyBody))
+	mux.HandleFunc("GET /admin/api/logs", s.requireAdmin(s.handleAdminListLogs))
+	mux.HandleFunc("GET /admin/api/logs/{id}", s.requireAdmin(s.handleAdminGetLog))
+	mux.HandleFunc("GET /admin/api/settings", s.requireAdmin(s.handleAdminGetSettings))
+	mux.HandleFunc("PUT /admin/api/settings", s.requireAdmin(s.handleAdminPutSettings))
 }
 
 func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
@@ -117,7 +117,10 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
-	if s.adminPassword == "" {
+	s.mu.Lock()
+	adminPassword := s.adminPassword
+	s.mu.Unlock()
+	if adminPassword == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "admin password not configured"})
 		return
 	}
@@ -129,7 +132,7 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Constant-time compare; pad to equal length via fixed buffers.
-	want := []byte(s.adminPassword)
+	want := []byte(adminPassword)
 	got := []byte(body.Password)
 	ok := false
 	if len(want) == len(got) {
@@ -717,9 +720,10 @@ func (s *Server) handleAdminGetSettings(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleAdminPutSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		LogBodies  *string `json:"log_bodies"`
-		Retention  *int    `json:"retention"`
-		Retention2 *int    `json:"log_retention_days"`
+		LogBodies     *string `json:"log_bodies"`
+		Retention     *int    `json:"retention"`
+		Retention2    *int    `json:"log_retention_days"`
+		AdminPassword *string `json:"admin_password"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
@@ -754,11 +758,28 @@ func (s *Server) handleAdminPutSettings(w http.ResponseWriter, r *http.Request) 
 		s.mu.Unlock()
 		_ = s.persistSetting(r, "log_retention_days", strconv.Itoa(*ret))
 	}
+	if body.AdminPassword != nil {
+		pw := strings.TrimSpace(*body.AdminPassword)
+		if pw == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "admin_password must not be empty"})
+			return
+		}
+		if pw == "change-me" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": `admin_password must not be "change-me"`})
+			return
+		}
+		s.mu.Lock()
+		s.adminPassword = pw
+		s.mu.Unlock()
+		// Persist for process restarts that load settings table overlay (yaml still wins at boot unless env set).
+		_ = s.persistSetting(r, "admin_password", pw)
+	}
 	logBodies, retention := s.loadRuntimeSettings(r)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"log_bodies":         logBodies,
 		"retention":          retention,
 		"log_retention_days": retention,
+		"admin_password_set": true,
 	})
 }
 

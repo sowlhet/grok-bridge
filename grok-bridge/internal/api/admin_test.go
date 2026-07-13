@@ -359,3 +359,108 @@ func TestAdminSettingsGetPut(t *testing.T) {
 		t.Fatalf("retention=%v", ret)
 	}
 }
+
+func TestAdminPasswordChangeViaSettings(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "admin-pw.db")
+	db, err := dbpkg.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := dbpkg.Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	oldPW := "old-admin-secret"
+	s := api.NewServer(api.ServerDeps{
+		Keys:            &access.KeyStore{DB: db},
+		Accounts:        &account.Store{DB: db},
+		Logs:            &logging.RequestLogStore{DB: db},
+		Catalog:         models.NewFromConfig(&config.Config{Models: []config.ModelEntry{{ID: "grok-4.5"}}, Proxy: config.ProxyConfig{UnknownModel: "passthrough"}}),
+		AdminPassword:   oldPW,
+		AdminSessionTTL: time.Hour,
+		LogBodies:       "off",
+		LogRetentionDays: 7,
+	})
+	h := s.Handler()
+	cookie := adminLogin(t, h, oldPW)
+
+	body := []byte(`{"admin_password":"new-admin-secret"}`)
+	req := httptest.NewRequest(http.MethodPut, "/admin/api/settings", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("put password status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	// New password works.
+	cookie2 := adminLogin(t, h, "new-admin-secret")
+	if cookie2 == nil {
+		t.Fatal("login with new password failed")
+	}
+	// Old password fails.
+	req = httptest.NewRequest(http.MethodPost, "/admin/api/login", bytes.NewReader([]byte(`{"password":"old-admin-secret"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("old password status=%d", rr.Code)
+	}
+}
+
+func TestSplitHandlersPublicVsAdmin(t *testing.T) {
+	h, password := openAdminServer(t)
+	// openAdminServer returns combined Handler; build a fresh server for split checks.
+	_ = h
+	_ = password
+
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "split.db")
+	db, err := dbpkg.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := dbpkg.Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	s := api.NewServer(api.ServerDeps{
+		Keys:            &access.KeyStore{DB: db},
+		Accounts:        &account.Store{DB: db},
+		Logs:            &logging.RequestLogStore{DB: db},
+		Catalog:         models.NewFromConfig(&config.Config{Models: []config.ModelEntry{{ID: "grok-4.5"}}, Proxy: config.ProxyConfig{UnknownModel: "passthrough"}}),
+		AdminPassword:   "split-admin-secret",
+		AdminSessionTTL: time.Hour,
+	})
+
+	// Public handler: healthz ok, admin login not found / not registered.
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rr := httptest.NewRecorder()
+	s.PublicHandler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || rr.Body.String() != "ok" {
+		t.Fatalf("public healthz: %d %s", rr.Code, rr.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodPost, "/admin/api/login", bytes.NewReader([]byte(`{"password":"split-admin-secret"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rr = httptest.NewRecorder()
+	s.PublicHandler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("public should not serve admin login, status=%d", rr.Code)
+	}
+
+	// Admin handler: login works; models require key path not registered.
+	req = httptest.NewRequest(http.MethodPost, "/admin/api/login", bytes.NewReader([]byte(`{"password":"split-admin-secret"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rr = httptest.NewRecorder()
+	s.AdminHandler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin login status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	rr = httptest.NewRecorder()
+	s.AdminHandler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("admin should not serve public models, status=%d", rr.Code)
+	}
+}

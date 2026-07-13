@@ -3,12 +3,16 @@ services:
     build: .
     ports:
       - "8080:8080"
+      # Uncomment if using server.admin_listen / GROK_BRIDGE_ADMIN_LISTEN:
+      # - "8081:8081"
     volumes:
       - ./config.yaml:/config/config.yaml:ro
       - ./data:/data
     environment:
       GROK_BRIDGE_LISTEN: "0.0.0.0:8080"
       GROK_BRIDGE_SQLITE_PATH: "/data/grok-bridge.db"
-      # Prefer setting this in the host env / .env rather than committing secrets.
-      GROK_BRIDGE_ADMIN_PASSWORD: "${GROK_BRIDGE_ADMIN_PASSWORD:-change-me}"
+      # REQUIRED: set a strong password. Server exits if this is empty or "change-me".
+      # Export on the host or put in a local .env file (do not commit secrets):
+      #   export GROK_BRIDGE_ADMIN_PASSWORD='your-strong-password'
+      GROK_BRIDGE_ADMIN_PASSWORD: "${GROK_BRIDGE_ADMIN_PASSWORD:?set GROK_BRIDGE_ADMIN_PASSWORD}"
     restart: unless-stopped

@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"flag"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/wlhet/grok-bridge/internal/access"
@@ -46,15 +49,48 @@ func main() {
 		log.Fatalf("migrate db: %v", err)
 	}
 
+	// Runtime password updated via admin settings (when env not set).
+	if os.Getenv("GROK_BRIDGE_ADMIN_PASSWORD") == "" {
+		if v, ok := loadSetting(ctx, db, "admin_password"); ok && strings.TrimSpace(v) != "" {
+			cfg.Admin.Password = v
+		}
+	}
+	if err := requireStrongAdminPassword(cfg.Admin.Password); err != nil {
+		log.Fatal(err)
+	}
+
+	// Overlay runtime proxy settings if present.
+	if v, ok := loadSetting(ctx, db, "log_bodies"); ok && v != "" {
+		cfg.Proxy.LogBodies = v
+	}
+	if v, ok := loadSetting(ctx, db, "log_retention_days"); ok && v != "" {
+		if n, err := parsePositiveInt(v); err == nil {
+			cfg.Proxy.LogRetentionDays = n
+		}
+	}
+
 	accStore := &account.Store{DB: db}
 	keyStore := &access.KeyStore{DB: db}
 	logStore := &logging.RequestLogStore{DB: db}
 	catalog := models.NewFromConfig(cfg)
 	picker := &account.Picker{Store: accStore}
 
-	httpClient := &http.Client{}
-	oauth := &xaiauth.Client{HTTP: httpClient}
-	xaiClient := &xai.Client{HTTP: httpClient}
+	// Upstream HTTP: no overall Timeout so SSE streams can run long; bound headers.
+	upstreamTransport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		ResponseHeaderTimeout: 120 * time.Second,
+	}
+	upstreamClient := &http.Client{Transport: upstreamTransport}
+	// OAuth credential acquisition stays short-lived.
+	oauthClient := &http.Client{Timeout: 30 * time.Second}
+
+	oauth := &xaiauth.Client{HTTP: oauthClient}
+	xaiClient := &xai.Client{HTTP: upstreamClient}
 
 	p := &pipeline.Pipeline{
 		Accounts:     picker,
@@ -85,9 +121,85 @@ func main() {
 		LogRetentionDays: cfg.Proxy.LogRetentionDays,
 	})
 
-	log.Printf("listening on %s (sqlite=%s)", cfg.Server.Listen, sqlitePath)
-	if err := http.ListenAndServe(cfg.Server.Listen, s.Handler()); err != nil {
+	// Log retention purge: once at start, then hourly.
+	go runLogRetentionPurge(logStore, s)
+
+	publicAddr := cfg.Server.Listen
+	adminAddr := strings.TrimSpace(cfg.Server.AdminListen)
+
+	if adminAddr == "" {
+		log.Printf("listening on %s (sqlite=%s)", publicAddr, sqlitePath)
+		if err := http.ListenAndServe(publicAddr, s.Handler()); err != nil {
+			log.Printf("server stopped: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Split listeners: public API vs admin UI/API.
+	log.Printf("public listening on %s; admin listening on %s (sqlite=%s)", publicAddr, adminAddr, sqlitePath)
+	errCh := make(chan error, 2)
+	go func() {
+		errCh <- http.ListenAndServe(publicAddr, s.PublicHandler())
+	}()
+	go func() {
+		errCh <- http.ListenAndServe(adminAddr, s.AdminHandler())
+	}()
+	if err := <-errCh; err != nil {
 		log.Printf("server stopped: %v", err)
 		os.Exit(1)
+	}
+}
+
+func requireStrongAdminPassword(pw string) error {
+	pw = strings.TrimSpace(pw)
+	if pw == "" {
+		return fatalError("admin.password is empty; set admin.password or GROK_BRIDGE_ADMIN_PASSWORD")
+	}
+	if pw == "change-me" {
+		return fatalError(`admin.password is the insecure default "change-me"; set a strong password via config or GROK_BRIDGE_ADMIN_PASSWORD`)
+	}
+	return nil
+}
+
+type fatalError string
+
+func (e fatalError) Error() string { return string(e) }
+
+func loadSetting(ctx context.Context, db *sql.DB, key string) (string, bool) {
+	var v string
+	err := db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = ?`, key).Scan(&v)
+	if err != nil {
+		return "", false
+	}
+	return v, true
+}
+
+func parsePositiveInt(s string) (int, error) {
+	return strconv.Atoi(strings.TrimSpace(s))
+}
+
+func runLogRetentionPurge(store *logging.RequestLogStore, s *api.Server) {
+	purge := func() {
+		days := s.LogRetentionDays()
+		if days <= 0 {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		n, err := store.DeleteOlderThanDays(ctx, days)
+		if err != nil {
+			log.Printf("log retention purge: %v", err)
+			return
+		}
+		if n > 0 {
+			log.Printf("log retention purge: deleted %d rows older than %d days", n, days)
+		}
+	}
+	purge()
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for range ticker.C {
+		purge()
 	}
 }

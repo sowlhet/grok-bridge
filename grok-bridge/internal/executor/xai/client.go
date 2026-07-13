@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/wlhet/grok-bridge/internal/account"
 	xaiauth "github.com/wlhet/grok-bridge/internal/auth/xai"
@@ -61,7 +62,18 @@ func (c *Client) httpClient() *http.Client {
 	if c != nil && c.HTTP != nil {
 		return c.HTTP
 	}
-	return http.DefaultClient
+	// Default: no overall Timeout (streams may run long) but bound response headers.
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+			ResponseHeaderTimeout: 120 * time.Second,
+		},
+	}
 }
 
 // DoResponses POSTs body to {ChatBaseURL}/responses.

@@ -169,6 +169,9 @@ func (c *Config) ApplyEnv() {
 	if v := os.Getenv("GROK_BRIDGE_LISTEN"); v != "" {
 		c.Server.Listen = v
 	}
+	if v := os.Getenv("GROK_BRIDGE_ADMIN_LISTEN"); v != "" {
+		c.Server.AdminListen = v
+	}
 	if v := os.Getenv("GROK_BRIDGE_ADMIN_PASSWORD"); v != "" {
 		c.Admin.Password = v
 	}

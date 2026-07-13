@@ -199,3 +199,37 @@ INSERT INTO accounts (
 		t.Fatalf("TopAccounts=%+v", st.TopAccounts)
 	}
 }
+
+func TestDeleteOlderThan(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	old := time.Now().UTC().AddDate(0, 0, -40).Format(time.RFC3339)
+	recent := time.Now().UTC().Format(time.RFC3339)
+	if err := store.Insert(ctx, logging.LogRecord{RequestID: "old", CreatedAt: old, StatusCode: 200}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Insert(ctx, logging.LogRecord{RequestID: "new", CreatedAt: recent, StatusCode: 200}); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := store.DeleteOlderThanDays(ctx, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("deleted=%d want 1", n)
+	}
+	all, err := store.Query(ctx, logging.LogFilter{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].RequestID != "new" {
+		t.Fatalf("remaining=%+v", all)
+	}
+	// retention <= 0 is a no-op
+	n, err = store.DeleteOlderThanDays(ctx, 0)
+	if err != nil || n != 0 {
+		t.Fatalf("noop delete: n=%d err=%v", n, err)
+	}
+}

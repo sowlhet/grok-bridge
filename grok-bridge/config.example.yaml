@@ -1,12 +1,17 @@
 # Example configuration for grok-bridge.
 # Prefer env overrides for secrets: GROK_BRIDGE_ADMIN_PASSWORD, GROK_BRIDGE_LISTEN, GROK_BRIDGE_SQLITE_PATH.
+# Server refuses to start if admin.password is empty or "change-me".
 
 server:
   listen: "0.0.0.0:8080"
+  # Optional second listener for admin UI/API only (public routes stay on listen).
+  # When set, /admin and /admin/api/* are served only on this address.
   # admin_listen: "127.0.0.1:8081"
+  # Or: GROK_BRIDGE_ADMIN_LISTEN=127.0.0.1:8081
 
 admin:
-  password: "change-me"   # prefer env GROK_BRIDGE_ADMIN_PASSWORD
+  # REQUIRED: set a strong password (not "change-me"). Prefer GROK_BRIDGE_ADMIN_PASSWORD.
+  password: ""
   session_ttl: 24h
 
 data:
