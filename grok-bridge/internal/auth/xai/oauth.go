@@ -148,6 +148,34 @@ func (c *Client) requestDeviceCode(ctx context.Context, deviceAuthorizationEndpo
 	return &deviceCode, nil
 }
 
+// PollTokenOnce performs a single device-code token exchange attempt.
+// pending is true when the user has not yet authorized (authorization_pending / slow_down).
+func (c *Client) PollTokenOnce(ctx context.Context, deviceCode, tokenEndpoint string) (token *TokenData, pending bool, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	deviceCode = strings.TrimSpace(deviceCode)
+	if deviceCode == "" {
+		return nil, false, fmt.Errorf("xai device code: device_code is required")
+	}
+	tokenEndpoint = strings.TrimSpace(tokenEndpoint)
+	if tokenEndpoint == "" {
+		discovery, derr := c.Discover(ctx)
+		if derr != nil {
+			return nil, false, derr
+		}
+		tokenEndpoint = discovery.TokenEndpoint
+	}
+	token, pollErr, _, shouldContinue := c.exchangeDeviceCode(ctx, tokenEndpoint, deviceCode, defaultPollInterval)
+	if token != nil {
+		return token, false, nil
+	}
+	if shouldContinue {
+		return nil, true, nil
+	}
+	return nil, false, pollErr
+}
+
 // PollToken polls the token endpoint until the user authorizes or the device code expires.
 func (c *Client) PollToken(ctx context.Context, deviceCode *DeviceCodeResponse) (*TokenData, error) {
 	if deviceCode == nil {

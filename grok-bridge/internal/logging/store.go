@@ -144,6 +144,23 @@ INSERT INTO request_logs (
 	return nil
 }
 
+// Get returns a request log by id, or (nil, nil) if not found.
+func (s *RequestLogStore) Get(ctx context.Context, id string) (*LogRecord, error) {
+	row := s.DB.QueryRowContext(ctx, `
+SELECT`+logColumns+`
+FROM request_logs
+WHERE id = ?
+`, id)
+	r, err := scanLog(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get request_log: %w", err)
+	}
+	return &r, nil
+}
+
 // Query returns request logs matching filter, newest first.
 func (s *RequestLogStore) Query(ctx context.Context, f LogFilter) ([]LogRecord, error) {
 	var (

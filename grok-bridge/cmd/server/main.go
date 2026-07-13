@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/wlhet/grok-bridge/internal/access"
 	"github.com/wlhet/grok-bridge/internal/account"
@@ -66,10 +67,22 @@ func main() {
 		LogBodies:    cfg.Proxy.LogBodies,
 	}
 
+	sessionTTL, err := time.ParseDuration(cfg.Admin.SessionTTL)
+	if err != nil {
+		sessionTTL = 24 * time.Hour
+	}
+
 	s := api.NewServer(api.ServerDeps{
-		Pipeline: p,
-		Keys:     keyStore,
-		Catalog:  catalog,
+		Pipeline:         p,
+		Keys:             keyStore,
+		Catalog:          catalog,
+		Accounts:         accStore,
+		Logs:             logStore,
+		OAuth:            oauth,
+		AdminPassword:    cfg.Admin.Password,
+		AdminSessionTTL:  sessionTTL,
+		LogBodies:        cfg.Proxy.LogBodies,
+		LogRetentionDays: cfg.Proxy.LogRetentionDays,
 	})
 
 	log.Printf("listening on %s (sqlite=%s)", cfg.Server.Listen, sqlitePath)

@@ -146,6 +146,27 @@ WHERE id = ?
 	return nil
 }
 
+// SetLabel updates the display label for an account.
+func (s *Store) SetLabel(ctx context.Context, id, label string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	res, err := s.DB.ExecContext(ctx, `
+UPDATE accounts
+SET label = ?, updated_at = ?
+WHERE id = ?
+`, label, now, id)
+	if err != nil {
+		return fmt.Errorf("set label: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set label rows: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("account %q not found", id)
+	}
+	return nil
+}
+
 // Delete removes an account by id.
 func (s *Store) Delete(ctx context.Context, id string) error {
 	res, err := s.DB.ExecContext(ctx, `DELETE FROM accounts WHERE id = ?`, id)

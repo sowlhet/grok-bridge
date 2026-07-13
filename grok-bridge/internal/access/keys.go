@@ -16,12 +16,12 @@ import (
 
 // KeyRecord is a client API key metadata row (no plaintext).
 type KeyRecord struct {
-	ID         string
-	Label      string
-	KeyPrefix  string
-	Enabled    bool
-	LastUsedAt string
-	CreatedAt  string
+	ID         string `json:"id"`
+	Label      string `json:"label"`
+	KeyPrefix  string `json:"key_prefix"`
+	Enabled    bool   `json:"enabled"`
+	LastUsedAt string `json:"last_used_at"`
+	CreatedAt  string `json:"created_at"`
 }
 
 // KeyStore persists and verifies client API keys in SQLite.
