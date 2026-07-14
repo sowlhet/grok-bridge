@@ -38,6 +38,30 @@ fn service_base_url(state: tauri::State<'_, AppState>) -> String {
         .unwrap_or_else(|_| "http://127.0.0.1:18080".into())
 }
 
+#[tauri::command]
+fn get_listen_port(state: tauri::State<'_, AppState>) -> u16 {
+    state.sidecar.lock().map(|s| s.port()).unwrap_or(18080)
+}
+
+#[tauri::command]
+fn set_listen_port(app: AppHandle, state: tauri::State<'_, AppState>, port: u16) -> Result<String, String> {
+    if !(1024..=65535).contains(&port) {
+        return Err("端口需在 1024-65535".into());
+    }
+    {
+        let mut mgr = state.sidecar.lock().map_err(|e| e.to_string())?;
+        mgr.set_port(port)?;
+    }
+    // Restart service so new port binds immediately.
+    restart_service(&app)?;
+    let base = state
+        .sidecar
+        .lock()
+        .map(|s| s.base_url())
+        .unwrap_or_else(|_| format!("http://127.0.0.1:{port}"));
+    Ok(base)
+}
+
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         // Only show/focus — never reload page here (prevents tray flicker).
@@ -209,7 +233,7 @@ pub fn run() {
         .manage(AppState {
             sidecar: Mutex::new(SidecarManager::new()),
         })
-        .invoke_handler(tauri::generate_handler![service_status, service_base_url])
+        .invoke_handler(tauri::generate_handler![service_status, service_base_url, get_listen_port, set_listen_port])
         .setup(|app| {
             setup_tray(app.handle())?;
             let handle = app.handle().clone();

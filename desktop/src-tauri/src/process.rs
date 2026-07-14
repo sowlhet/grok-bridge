@@ -35,7 +35,7 @@ impl Default for SidecarManager {
 
 impl SidecarManager {
     pub fn new() -> Self {
-        let port = 18080;
+        let port = read_configured_port().unwrap_or(18080);
         Self {
             child: None,
             state: ServiceState::Stopped,
@@ -44,6 +44,21 @@ impl SidecarManager {
             last_error: String::new(),
             desktop_token: String::new(),
         }
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub fn set_port(&mut self, port: u16) -> Result<(), String> {
+        if !(1..=65535).contains(&port) {
+            return Err("port out of range".into());
+        }
+        self.port = port;
+        self.base_url = format!("http://127.0.0.1:{port}");
+        // Persist into config.yaml for next boot / service restart.
+        paths::update_listen(&format!("127.0.0.1:{port}"))?;
+        Ok(())
     }
 
     pub fn state(&self) -> ServiceState {
@@ -72,6 +87,10 @@ impl SidecarManager {
         self.stop();
 
         self.state = ServiceState::Starting;
+        if let Some(p) = read_configured_port() {
+            self.port = p;
+            self.base_url = format!("http://127.0.0.1:{p}");
+        }
         let listen = format!("127.0.0.1:{}", self.port);
         let password = std::env::var("GROK_BRIDGE_ADMIN_PASSWORD")
             .unwrap_or_else(|_| "grok-bridge-dev".to_string());
@@ -296,4 +315,25 @@ fn ensure_desktop_token() -> Result<String, String> {
     let token = buf.iter().map(|b| format!("{b:02x}")).collect::<String>();
     std::fs::write(&path, &token).map_err(|e| format!("write desktop token: {e}"))?;
     Ok(token)
+}
+
+
+fn read_configured_port() -> Option<u16> {
+    let path = paths::config_path().ok()?;
+    let text = std::fs::read_to_string(path).ok()?;
+    // very small YAML parse: look for "listen: host:port"
+    for raw in text.lines() {
+        let line = raw.trim();
+        if let Some(rest) = line.strip_prefix("listen:") {
+            let val = rest.trim().trim_matches('"').trim_matches('\'');
+            if let Some(idx) = val.rfind(':') {
+                if let Ok(port) = val[idx + 1..].trim().parse::<u16>() {
+                    if port > 0 {
+                        return Some(port);
+                    }
+                }
+            }
+        }
+    }
+    None
 }

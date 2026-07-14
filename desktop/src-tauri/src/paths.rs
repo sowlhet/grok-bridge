@@ -71,3 +71,45 @@ xai: {{}}
     fs::write(&path, body).map_err(|e| format!("write config: {e}"))?;
     Ok(path)
 }
+
+
+pub fn update_listen(listen: &str) -> Result<(), String> {
+    let path = config_path()?;
+    // Ensure config exists first.
+    let _ = ensure_config(listen, "grok-bridge-dev");
+    let text = fs::read_to_string(&path).map_err(|e| format!("read config: {e}"))?;
+    let mut out = String::new();
+    let mut replaced = false;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("listen:") {
+            let indent_len = line.len() - trimmed.len();
+            out.push_str(&line[..indent_len]);
+            out.push_str("listen: \"");
+            out.push_str(listen);
+            out.push_str("\"\n");
+            replaced = true;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if !replaced {
+        // insert under server:
+        let mut inserted = false;
+        let mut tmp = String::new();
+        for line in out.lines() {
+            tmp.push_str(line);
+            tmp.push('\n');
+            if !inserted && line.trim() == "server:" {
+                tmp.push_str("  listen: \"");
+                tmp.push_str(listen);
+                tmp.push_str("\"\n");
+                inserted = true;
+            }
+        }
+        out = tmp;
+    }
+    fs::write(&path, out).map_err(|e| format!("write config: {e}"))?;
+    Ok(())
+}

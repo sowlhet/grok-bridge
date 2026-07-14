@@ -1046,6 +1046,7 @@
       account_concurrency: 0,
       max_account_switches: 2,
       max_transient_retries: 2,
+      listen_port: 18080,
     };
     let logBodies = s.log_bodies || "errors_only";
     let retention = s.retention ?? s.log_retention_days ?? 30;
@@ -1066,17 +1067,52 @@
             account_concurrency: Number(e.target.account_concurrency.value) || 0,
             max_account_switches: Number(e.target.max_account_switches.value) || 0,
             max_transient_retries: Number(e.target.max_transient_retries.value) || 0,
+            listen_port: Number(e.target.listen_port.value) || 18080,
           };
           const pw = (e.target.admin_password.value || "").trim();
           if (pw) payload.admin_password = pw;
-          saveSettings(payload).then(() => {
+          saveSettings(payload).then(async () => {
             e.target.admin_password.value = "";
+            // If running inside desktop shell, apply port immediately via Tauri command.
+            try {
+              const invoke = window.__TAURI__?.core?.invoke;
+              if (invoke && payload.listen_port) {
+                const base = await invoke("set_listen_port", { port: payload.listen_port });
+                setFlash("端口已更新为 " + payload.listen_port + "，服务已重启（" + base + "）");
+                // hard navigate to new admin if port changed
+                const target = base.replace(/\/$/, "") + "/admin/";
+                if (!location.href.startsWith(base)) {
+                  setTimeout(() => location.replace(target), 400);
+                }
+              }
+            } catch (err) {
+              setFlash("设置已保存。端口变更需重启服务后生效。");
+            }
           });
         },
       },
       el(
         "div",
         { className: "settings-grid" },
+        el(
+          "section",
+          { className: "settings-card" },
+          el("h3", { className: "settings-section", text: "本机服务" }),
+          el(
+            "div",
+            { className: "form-group" },
+            el("label", { for: "listen_port", text: "工作端口" }),
+            el("input", {
+              type: "number",
+              id: "listen_port",
+              name: "listen_port",
+              min: "1024",
+              max: "65535",
+              value: String(s.listen_port || 18080),
+            }),
+            el("p", { className: "muted", text: "默认 18080。修改后桌面版会自动重启服务；Claude/Codex 请同步改 base URL。" })
+          )
+        ),
         el(
           "section",
           { className: "settings-card" },

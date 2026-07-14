@@ -798,6 +798,12 @@ func (s *Server) handleAdminGetLog(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAdminGetSettings(w http.ResponseWriter, r *http.Request) {
 	logBodies, retention := s.loadRuntimeSettings(r)
 	s.mu.Lock()
+	listenPort := 18080
+	if v, ok := s.loadSettingValue(r, "listen_port"); ok {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 && n <= 65535 {
+			listenPort = n
+		}
+	}
 	out := map[string]any{
 		"log_bodies":            logBodies,
 		"retention":             retention,
@@ -808,6 +814,7 @@ func (s *Server) handleAdminGetSettings(w http.ResponseWriter, r *http.Request) 
 		"account_concurrency":   s.accountConcurrency,
 		"max_account_switches":  s.maxAccountSwitches,
 		"max_transient_retries": s.maxTransientRetries,
+		"listen_port":           listenPort,
 	}
 	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, out)
@@ -825,10 +832,18 @@ func (s *Server) handleAdminPutSettings(w http.ResponseWriter, r *http.Request) 
 		AccountConcurrency  *int    `json:"account_concurrency"`
 		MaxAccountSwitches  *int    `json:"max_account_switches"`
 		MaxTransientRetries *int    `json:"max_transient_retries"`
+		ListenPort          *int    `json:"listen_port"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
+	}
+	if body.ListenPort != nil {
+		if *body.ListenPort < 1024 || *body.ListenPort > 65535 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "listen_port must be 1024-65535"})
+			return
+		}
+		_ = s.persistSetting(r, "listen_port", strconv.Itoa(*body.ListenPort))
 	}
 	if body.LogBodies != nil {
 		switch *body.LogBodies {
@@ -1040,6 +1055,31 @@ func (s *Server) settingsDB() *sql.DB {
 	}
 	if s.keys != nil && s.keys.DB != nil {
 		return s.keys.DB
+	}
+	return nil
+}
+
+
+func (s *Server) loadSettingValue(r *http.Request, key string) (string, bool) {
+	db := s.dbFrom(r)
+	if db == nil {
+		return "", false
+	}
+	var v string
+	if err := db.QueryRowContext(r.Context(), `SELECT value FROM settings WHERE key = ?`, key).Scan(&v); err != nil {
+		return "", false
+	}
+	return v, true
+}
+
+
+func (s *Server) dbFrom(r *http.Request) *sql.DB {
+	_ = r
+	if s.logs != nil && s.logs.DB != nil {
+		return s.logs.DB
+	}
+	if s.accounts != nil && s.accounts.DB != nil {
+		return s.accounts.DB
 	}
 	return nil
 }
