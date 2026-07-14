@@ -57,19 +57,43 @@ fn start_service(app: &AppHandle) -> Result<(), String> {
     let mut mgr = state.sidecar.lock().map_err(|e| e.to_string())?;
     mgr.start()?;
     let admin = mgr.admin_url();
+    let token = mgr.desktop_token();
     drop(mgr);
-    // Navigate immediately and once more shortly after, in case WebView wasn't ready.
     navigate_main_to_admin(app, &admin);
+    if !token.is_empty() {
+        let app2 = app.clone();
+        let admin2 = admin.clone();
+        let token2 = token.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            silent_login_and_open(&app2, &admin2, &token2);
+            std::thread::sleep(std::time::Duration::from_millis(900));
+            silent_login_and_open(&app2, &admin2, &token2);
+        });
+    }
     show_main_window(app);
-    let app2 = app.clone();
-    let admin2 = admin.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        navigate_main_to_admin(&app2, &admin2);
-        std::thread::sleep(std::time::Duration::from_millis(1200));
-        navigate_main_to_admin(&app2, &admin2);
-    });
     Ok(())
+}
+
+fn silent_login_and_open(app: &AppHandle, admin_url: &str, desktop_token: &str) {
+    let Some(window) = app.get_webview_window("main") else { return; };
+    let Ok(admin_json) = serde_json::to_string(admin_url) else { return; };
+    let Ok(token_json) = serde_json::to_string(desktop_token) else { return; };
+    let base = admin_url.trim_end_matches('/').trim_end_matches("/admin").to_string();
+    let login_url = format!("{}/admin/api/desktop-login", base.trim_end_matches('/'));
+    let Ok(login_json) = serde_json::to_string(&login_url) else { return; };
+    let mut js = String::new();
+    js.push_str("(async()=>{");
+    js.push_str("const loginApi="); js.push_str(&login_json); js.push(';');
+    js.push_str("const adminUrl="); js.push_str(&admin_json); js.push(';');
+    js.push_str("const token="); js.push_str(&token_json); js.push(';');
+    js.push_str("try{");
+    js.push_str("const res=await fetch(loginApi,{method:\"POST\",credentials:\"include\",headers:{\"Content-Type\":\"application/json\",\"X-Grok-Bridge-Desktop-Token\":token},body:JSON.stringify({token})});");
+    js.push_str("if(!res.ok){console.warn(\"desktop silent login failed\",res.status);return;}");
+    js.push_str("location.replace(adminUrl);");
+    js.push_str("}catch(e){console.warn(\"desktop silent login error\",e);}");
+    js.push_str("})();");
+    let _ = window.eval(&js);
 }
 
 fn stop_service(app: &AppHandle) -> Result<(), String> {

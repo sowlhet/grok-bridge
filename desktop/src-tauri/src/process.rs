@@ -24,6 +24,7 @@ pub struct SidecarManager {
     port: u16,
     base_url: String,
     last_error: String,
+    desktop_token: String,
 }
 
 impl Default for SidecarManager {
@@ -41,6 +42,7 @@ impl SidecarManager {
             port,
             base_url: format!("http://127.0.0.1:{port}"),
             last_error: String::new(),
+            desktop_token: String::new(),
         }
     }
 
@@ -56,6 +58,10 @@ impl SidecarManager {
         format!("{}/admin/", self.base_url.trim_end_matches('/'))
     }
 
+    pub fn desktop_token(&self) -> String {
+        self.desktop_token.clone()
+    }
+
     pub fn start(&mut self) -> Result<(), String> {
         if matches!(self.state, ServiceState::Running | ServiceState::Starting) {
             if self.health_ok() {
@@ -69,6 +75,7 @@ impl SidecarManager {
         let listen = format!("127.0.0.1:{}", self.port);
         let password = std::env::var("GROK_BRIDGE_ADMIN_PASSWORD")
             .unwrap_or_else(|_| "grok-bridge-dev".to_string());
+        let desktop_token = ensure_desktop_token()?;
         let config = paths::ensure_config(&listen, &password)?;
         let bin = resolve_sidecar_binary()?;
         let log_path = paths::data_dir()?.join("logs").join("sidecar.log");
@@ -86,6 +93,7 @@ impl SidecarManager {
             .arg(&config)
             .env("GROK_BRIDGE_LISTEN", &listen)
             .env("GROK_BRIDGE_ADMIN_PASSWORD", &password)
+            .env("GROK_BRIDGE_DESKTOP_TOKEN", &desktop_token)
             .stdin(Stdio::null())
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(err_file));
@@ -101,6 +109,7 @@ impl SidecarManager {
             .map_err(|e| format!("spawn sidecar {}: {e}", bin.display()))?;
         self.child = Some(child);
         self.base_url = format!("http://127.0.0.1:{}", self.port);
+        self.desktop_token = desktop_token;
 
         // Wait for health.
         let deadline = Instant::now() + Duration::from_secs(20);
@@ -241,4 +250,50 @@ fn _write_log(path: &Path, line: &str) {
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(f, "{line}");
     }
+}
+
+
+fn ensure_desktop_token() -> Result<String, String> {
+    if let Ok(v) = std::env::var("GROK_BRIDGE_DESKTOP_TOKEN") {
+        let v = v.trim().to_string();
+        if !v.is_empty() {
+            return Ok(v);
+        }
+    }
+    let path = paths::data_dir()?.join("desktop.token");
+    if path.exists() {
+        let v = std::fs::read_to_string(&path).map_err(|e| format!("read desktop token: {e}"))?;
+        let v = v.trim().to_string();
+        if !v.is_empty() {
+            return Ok(v);
+        }
+    }
+    // generate random token
+    let mut buf = [0u8; 32];
+    // simple entropy from time + randomish values
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    for (i, b) in buf.iter_mut().enumerate() {
+        *b = ((now >> ((i % 16) * 4)) as u8).wrapping_add((i as u8).wrapping_mul(37));
+    }
+    // better: use getrandom via std if available; fall back ok for local desktop
+    #[cfg(any(unix, windows))]
+    {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        now.hash(&mut h);
+        std::process::id().hash(&mut h);
+        let hv = h.finish().to_le_bytes();
+        for i in 0..8 {
+            buf[i] ^= hv[i];
+            buf[i + 8] ^= hv[i].wrapping_mul(3);
+            buf[i + 16] ^= hv[i].wrapping_add(11);
+            buf[i + 24] ^= hv[i].wrapping_add(29);
+        }
+    }
+    let token = buf.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    std::fs::write(&path, &token).map_err(|e| format!("write desktop token: {e}"))?;
+    Ok(token)
 }

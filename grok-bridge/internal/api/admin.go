@@ -79,6 +79,7 @@ func (ss *sessionStore) valid(token string) bool {
 func (s *Server) registerAdminRoutesOn(mux *http.ServeMux) {
 	// Login is public within /admin/api.
 	mux.HandleFunc("POST /admin/api/login", s.handleAdminLogin)
+	mux.HandleFunc("POST /admin/api/desktop-login", s.handleDesktopLogin)
 
 	// Protected routes.
 	mux.HandleFunc("GET /admin/api/dashboard", s.requireAdmin(s.handleAdminDashboard))
@@ -161,6 +162,76 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   int(s.sessions.ttl.Seconds()),
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleDesktopLogin issues an admin session for the desktop shell without password prompt.
+// Security constraints:
+// - only loopback clients (127.0.0.1 / ::1)
+// - requires desktop token header matching server desktopToken
+// Browser users still need password login.
+func (s *Server) handleDesktopLogin(w http.ResponseWriter, r *http.Request) {
+	if !isLoopbackRequest(r) {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "desktop login only on localhost"})
+		return
+	}
+	s.mu.Lock()
+	want := s.desktopToken
+	s.mu.Unlock()
+	if strings.TrimSpace(want) == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "desktop login not enabled"})
+		return
+	}
+	got := strings.TrimSpace(r.Header.Get("X-Grok-Bridge-Desktop-Token"))
+	if got == "" {
+		// also allow JSON body token for flexibility
+		var body struct {
+			Token string `json:"token"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body)
+		got = strings.TrimSpace(body.Token)
+	}
+	if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid desktop token"})
+		return
+	}
+	if s.sessions == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "admin not configured"})
+		return
+	}
+	token, err := s.sessions.create()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to create session"})
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     adminCookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int(s.sessions.ttl.Seconds()),
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "mode": "desktop"})
+}
+
+func isLoopbackRequest(r *http.Request) bool {
+	host := r.RemoteAddr
+	if host == "" {
+		return false
+	}
+	// RemoteAddr is host:port
+	h := host
+	if i := strings.LastIndex(host, ":"); i >= 0 {
+		// handle [ipv6]:port
+		if strings.HasPrefix(host, "[") {
+			if end := strings.Index(host, "]"); end > 0 {
+				h = host[1:end]
+			}
+		} else {
+			h = host[:i]
+		}
+	}
+	return h == "127.0.0.1" || h == "::1" || h == "localhost"
 }
 
 func (s *Server) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {

@@ -175,6 +175,7 @@ func main() {
 		Logs:                logStore,
 		OAuth:               oauth,
 		AdminPassword:       cfg.Admin.Password,
+		DesktopToken:        strings.TrimSpace(os.Getenv("GROK_BRIDGE_DESKTOP_TOKEN")),
 		AdminSessionTTL:     sessionTTL,
 		LogBodies:           cfg.Proxy.LogBodies,
 		LogRetentionDays:    cfg.Proxy.LogRetentionDays,

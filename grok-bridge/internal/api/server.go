@@ -38,6 +38,8 @@ type ServerDeps struct {
 	Logs             *logging.RequestLogStore
 	OAuth            *xaiauth.Client
 	AdminPassword    string
+	// DesktopToken enables localhost silent login for the desktop shell.
+	DesktopToken     string
 	AdminSessionTTL  time.Duration
 	LogBodies        string
 	LogRetentionDays int
@@ -67,6 +69,7 @@ type Server struct {
 	logs             *logging.RequestLogStore
 	oauth            *xaiauth.Client
 	adminPassword    string
+	desktopToken      string
 	sessions         *sessionStore
 	mu               sync.Mutex
 	logBodies        string
@@ -118,6 +121,7 @@ func NewServer(deps ServerDeps) *Server {
 		logs:                deps.Logs,
 		oauth:               deps.OAuth,
 		adminPassword:       deps.AdminPassword,
+		desktopToken:        strings.TrimSpace(deps.DesktopToken),
 		sessions:            newSessionStore(ttl),
 		logBodies:           logBodies,
 		logRetentionDays:    retention,
@@ -168,6 +172,13 @@ func (s *Server) LogRetentionDays() int {
 		return 30
 	}
 	return s.logRetentionDays
+}
+
+// SetDesktopToken updates the desktop silent-login token.
+func (s *Server) SetDesktopToken(token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.desktopToken = strings.TrimSpace(token)
 }
 
 // SetAdminPassword updates the in-memory admin password (runtime settings).
