@@ -212,24 +212,27 @@ button {
 /* Shell layout */
 .shell {
   display: grid;
-  grid-template-columns: 220px 1fr;
+  grid-template-columns: 148px 1fr;
   min-height: 100vh;
 }
 
 .sidebar {
   background: var(--bg-elevated);
   border-right: 1px solid var(--border);
-  padding: 20px 12px;
+  padding: 14px 8px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 
 .brand {
-  padding: 8px 12px 20px;
+  padding: 6px 10px 14px;
   font-weight: 700;
-  font-size: 15px;
+  font-size: 13px;
   letter-spacing: -0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .brand span {
@@ -238,7 +241,7 @@ button {
 
 .nav-item {
   display: block;
-  padding: 10px 12px;
+  padding: 8px 10px;
   border-radius: var(--radius);
   color: var(--text-muted);
   cursor: pointer;
@@ -246,6 +249,10 @@ button {
   background: transparent;
   text-align: left;
   width: 100%;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .nav-item:hover {
@@ -266,8 +273,9 @@ button {
 }
 
 .main {
-  padding: 28px 32px;
+  padding: 20px 22px;
   overflow-x: auto;
+  min-width: 0;
 }
 
 .page-header {
@@ -724,9 +732,73 @@ pre.body-block {
 @media (max-width: 720px) {
   .form-row { grid-template-columns: 1fr; }
   .shell { grid-template-columns: 1fr; }
+  .sidebar { flex-direction: row; flex-wrap: wrap; border-right: none; border-bottom: 1px solid var(--border); }
 }
 
 
 .filters .form-group input[type="datetime-local"] {
   min-width: 190px;
+}
+
+
+/* Compact account/log cells with hover full text via title */
+.table-wrap {
+  max-width: 100%;
+}
+
+table {
+  table-layout: fixed;
+  width: 100%;
+}
+
+th, td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.cell-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.cell-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.row-actions .btn-sm {
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+/* Account table column widths */
+.accounts-table th:nth-child(1),
+.accounts-table td:nth-child(1) { width: 22%; }
+.accounts-table th:nth-child(2),
+.accounts-table td:nth-child(2) { width: 10%; }
+.accounts-table th:nth-child(3),
+.accounts-table td:nth-child(3) { width: 8%; }
+.accounts-table th:nth-child(4),
+.accounts-table td:nth-child(4) { width: 16%; }
+.accounts-table th:nth-child(5),
+.accounts-table td:nth-child(5) { width: 10%; }
+.accounts-table th:nth-child(6),
+.accounts-table td:nth-child(6) { width: 34%; }
+
+.weight-input {
+  width: 64px;
+  padding: 4px 6px;
 }

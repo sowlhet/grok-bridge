@@ -582,15 +582,34 @@
   function renderAccounts() {
     const rows =
       state.accounts.length === 0
-        ? [el("tr", null, el("td", { colspan: "9", className: "empty", text: "暂无账号。请导入 JSON 或使用 OAuth 登录。" }))]
-        : state.accounts.map((a) =>
-            el(
+        ? [el("tr", null, el("td", { colspan: "6", className: "empty", text: "暂无账号。请导入 JSON 或使用 OAuth 登录。" }))]
+        : state.accounts.map((a) => {
+            const label = a.label || a.email || "—";
+            const email = a.email || "";
+            const expireFull = a.expires_at ? fmtTime(a.expires_at) : "—";
+            const token = a.access_token_suffix || "";
+            const tip = [
+              "ID: " + (a.id || "—"),
+              "邮箱: " + (email || "—"),
+              "状态: " + (a.status || "—"),
+              "权重: " + (a.weight > 0 ? a.weight : 1),
+              "过期: " + expireFull,
+              "Token: " + (token || "—"),
+              "Refresh: " + (a.has_refresh_token ? "有" : "无"),
+            ].join("\n");
+            return el(
               "tr",
-              null,
-              el("td", null, el("div", { text: a.label || a.email || "—" }), el("div", { className: "mono muted", text: shortId(a.id) })),
-              el("td", { text: a.email || "—" }),
+              { title: tip },
+              el(
+                "td",
+                { title: tip },
+                el("div", { className: "cell-ellipsis", text: label, title: label }),
+                el("div", { className: "cell-sub mono", text: shortId(a.id), title: a.id || "" })
+              ),
               el("td", null, badge(a.status)),
-              el("td", null,
+              el(
+                "td",
+                null,
                 el("input", {
                   type: "number",
                   className: "weight-input",
@@ -604,9 +623,8 @@
                   },
                 })
               ),
-              el("td", { className: "mono muted", text: a.expires_at ? fmtTime(a.expires_at) : "—" }),
-              el("td", { className: "mono muted", text: a.access_token_suffix || "—" }),
-              el("td", { text: a.has_refresh_token ? "有" : "无" }),
+              tipCell(shortExpire(a.expires_at), expireFull, "mono muted"),
+              tipCell(token ? ("…" + String(token).slice(-8)) : (a.has_refresh_token ? "有RT" : "—"), (token || "—") + " / refresh=" + (a.has_refresh_token ? "yes" : "no"), "mono muted"),
               el(
                 "td",
                 null,
@@ -618,36 +636,41 @@
                         type: "button",
                         className: "btn btn-sm",
                         text: "启用",
+                        title: "启用账号",
                         onclick: () => patchAccount(a.id, { status: "active" }),
                       })
                     : el("button", {
                         type: "button",
                         className: "btn btn-sm",
                         text: "禁用",
+                        title: "禁用账号",
                         onclick: () => patchAccount(a.id, { status: "disabled" }),
                       }),
                   el("button", {
                     type: "button",
                     className: "btn btn-sm",
-                    text: "刷新 Token",
+                    text: "刷新",
+                    title: "刷新 Token",
                     onclick: () => refreshAccount(a.id),
                   }),
                   el("button", {
                     type: "button",
                     className: "btn btn-sm",
                     text: "导出",
+                    title: "导出账号 JSON",
                     onclick: () => exportAccount(a.id),
                   }),
                   el("button", {
                     type: "button",
                     className: "btn btn-sm btn-danger",
                     text: "删除",
+                    title: "删除账号",
                     onclick: () => deleteAccount(a.id),
                   })
                 )
               )
-            )
-          );
+            );
+          });
 
     const fileInput = el("input", {
       type: "file",
@@ -694,7 +717,7 @@
         { className: "table-wrap" },
         el(
           "table",
-          null,
+          { className: "accounts-table" },
           el(
             "thead",
             null,
@@ -702,12 +725,10 @@
               "tr",
               null,
               el("th", { text: "账号" }),
-              el("th", { text: "邮箱" }),
               el("th", { text: "状态" }),
               el("th", { text: "权重" }),
-              el("th", { text: "过期时间" }),
-              el("th", { text: "Token" }),
-              el("th", { text: "Refresh" }),
+              el("th", { text: "过期" }),
+              el("th", { text: "凭证" }),
               el("th", { text: "操作" })
             )
           ),
@@ -1339,6 +1360,34 @@
   function shortId(id) {
     if (!id) return "";
     return id.length > 12 ? id.slice(0, 8) + "…" : id;
+  }
+
+  function tipCell(text, full, className) {
+    const shown = text == null || text === "" ? "—" : String(text);
+    const title = full == null || full === "" ? shown : String(full);
+    return el("td", {
+      className: (className ? className + " " : "") + "cell-ellipsis",
+      text: shown,
+      title: title,
+    });
+  }
+
+  function maskEmail(email) {
+    if (!email) return "—";
+    const s = String(email);
+    const at = s.indexOf("@");
+    if (at <= 1) return s;
+    const name = s.slice(0, at);
+    const domain = s.slice(at);
+    if (name.length <= 3) return name[0] + "***" + domain;
+    return name.slice(0, 2) + "***" + name.slice(-1) + domain;
+  }
+
+  function shortExpire(s) {
+    if (!s) return "—";
+    // show compact UTC+8 date-time without seconds when possible
+    const full = fmtTime(s);
+    return full.replace(/:\d{2}$/, "");
   }
 
   const DISPLAY_TZ = "Asia/Shanghai"; // UTC+8
