@@ -463,8 +463,13 @@
       "form",
       {
         className: "login-card",
+        // Help browsers treat this as a real login form and offer password save.
+        name: "admin-login",
+        method: "post",
+        action: "/admin/",
         onsubmit: (e) => {
           e.preventDefault();
+          // Username is only for browser password managers; auth still uses password.
           const pw = e.target.password.value;
           doLogin(pw);
         },
@@ -474,7 +479,22 @@
       el(
         "div",
         { className: "form-group" },
-        el("label", { for: "password", text: "管理员密码" }),
+        el("label", { for: "username", text: "账号" }),
+        el("input", {
+          type: "text",
+          id: "username",
+          name: "username",
+          value: "admin",
+          autocomplete: "username",
+          autocapitalize: "none",
+          spellcheck: "false",
+          required: true,
+        })
+      ),
+      el(
+        "div",
+        { className: "form-group" },
+        el("label", { for: "password", text: "密码" }),
         el("input", {
           type: "password",
           id: "password",
