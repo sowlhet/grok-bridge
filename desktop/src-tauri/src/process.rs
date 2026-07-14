@@ -165,6 +165,10 @@ fn resolve_sidecar_binary() -> Result<PathBuf, String> {
         if let Some(dir) = res.parent() {
             candidates.push(dir.join("grok-bridge"));
             candidates.push(dir.join("grok-bridge.exe"));
+            // Tauri externalBin naming
+            candidates.push(dir.join("grok-bridge-x86_64-pc-windows-msvc.exe"));
+            candidates.push(dir.join("grok-bridge-aarch64-apple-darwin"));
+            candidates.push(dir.join("grok-bridge-x86_64-apple-darwin"));
             candidates.push(dir.join("resources").join("grok-bridge"));
             candidates.push(dir.join("resources").join("grok-bridge.exe"));
             // macOS app bundle Resources

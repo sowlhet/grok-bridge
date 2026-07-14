@@ -26,3 +26,6 @@ dist-ssr
 node_modules/
 src-tauri/target/
 .DS_Store
+
+# Local platform sidecars (built in CI/scripts)
+src-tauri/binaries/
