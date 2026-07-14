@@ -113,6 +113,12 @@ button {
   border-radius: var(--radius);
   margin-bottom: 12px;
   font-size: 13px;
+  animation: fade-in 0.12s ease-out;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .form-group input,

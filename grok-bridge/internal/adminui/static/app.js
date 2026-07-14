@@ -153,6 +153,28 @@
     state.flash = "";
   }
 
+  function updateLoadingIndicator(on) {
+    const footerBtn = document.querySelector(".sidebar-footer .btn");
+    if (footerBtn) {
+      footerBtn.textContent = on ? "加载中…" : "刷新本页";
+      footerBtn.disabled = !!on;
+    }
+    let bar = document.querySelector(".main > .loading-bar");
+    if (on) {
+      if (!bar) {
+        const main = document.querySelector(".main");
+        if (main) {
+          bar = document.createElement("div");
+          bar.className = "loading-bar";
+          bar.textContent = "加载中…";
+          main.insertBefore(bar, main.firstChild);
+        }
+      }
+    } else if (bar) {
+      bar.remove();
+    }
+  }
+
   // ---------- data loaders ----------
   async function checkAuth() {
     try {
@@ -198,16 +220,16 @@
   }
 
   function goPage(id) {
-    if (state.page === id && !state.loading) {
-      // 同页再点：强制刷新
-      loadPage();
+    // Same page click: do nothing (avoid full remount flicker).
+    // Use the sidebar "刷新本页" button when an explicit refresh is needed.
+    if (state.page === id) {
       return;
     }
     state.page = id;
     state.selectedLog = null;
     state.modal = null;
     clearMessages();
-    // 先立刻渲染目标页骨架，再拉数据（避免“点了没反应”）
+    // Render target page shell first, then fetch data.
     render();
     loadPage();
   }
@@ -215,8 +237,12 @@
   async function loadPage() {
     const seq = ++loadSeq;
     const page = state.page;
+    const prevLoading = state.loading;
     state.loading = true;
-    render();
+    // Avoid full-page remount flicker: only patch loading indicator when already on-page.
+    if (!prevLoading) {
+      updateLoadingIndicator(true);
+    }
     try {
       switch (page) {
         case "dashboard":
@@ -242,7 +268,7 @@
         setError(e.message);
       }
     } finally {
-      // 只有最新一次加载才更新 UI
+      // Only the latest load updates UI.
       if (seq === loadSeq) {
         state.loading = false;
         render();
