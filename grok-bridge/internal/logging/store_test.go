@@ -30,24 +30,26 @@ func TestInsertAndQuery(t *testing.T) {
 	ctx := context.Background()
 
 	rec := logging.LogRecord{
-		RequestID:      "req-1",
-		APIKeyID:       "key-1",
-		APIKeyLabel:    "dev",
-		AccountID:      "acc-1",
-		AccountLabel:   "a@x.ai",
-		Protocol:       "openai_chat",
-		ModelRequested: "gpt-5",
-		ModelUpstream:  "grok-4.5",
-		Stream:         false,
-		StatusCode:     200,
-		LatencyMs:      42,
-		InputTokens:    10,
-		OutputTokens:   20,
-		ClientIP:       "127.0.0.1",
-		UserAgent:      "test",
-		Path:           "/v1/chat/completions",
-		RequestBody:    `{"model":"gpt-5"}`,
-		ResponseBody:   `{"id":"r1"}`,
+		RequestID:         "req-1",
+		APIKeyID:          "key-1",
+		APIKeyLabel:       "dev",
+		AccountID:         "acc-1",
+		AccountLabel:      "a@x.ai",
+		Protocol:          "openai_chat",
+		ModelRequested:    "gpt-5",
+		ModelUpstream:     "grok-4.5",
+		Stream:            false,
+		StatusCode:        200,
+		LatencyMs:         42,
+		FirstTokenSeconds: 1.23,
+		TotalSeconds:      3.45,
+		InputTokens:       10,
+		OutputTokens:      20,
+		ClientIP:          "127.0.0.1",
+		UserAgent:         "test",
+		Path:              "/v1/chat/completions",
+		RequestBody:       `{"model":"gpt-5"}`,
+		ResponseBody:      `{"id":"r1"}`,
 	}
 	if err := store.Insert(ctx, rec); err != nil {
 		t.Fatal(err)
@@ -93,7 +95,7 @@ func TestInsertAndQuery(t *testing.T) {
 	if got.RequestBody != `{"model":"gpt-5"}` || got.ResponseBody != `{"id":"r1"}` {
 		t.Fatalf("bodies: req=%q resp=%q", got.RequestBody, got.ResponseBody)
 	}
-	if got.LatencyMs != 42 || got.InputTokens != 10 || got.OutputTokens != 20 {
+	if got.LatencyMs != 42 || got.FirstTokenSeconds != 1.23 || got.TotalSeconds != 3.45 || got.InputTokens != 10 || got.OutputTokens != 20 {
 		t.Fatalf("metrics: %+v", got)
 	}
 	if got.Stream {

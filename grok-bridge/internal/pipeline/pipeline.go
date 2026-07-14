@@ -76,21 +76,35 @@ func (p *Pipeline) Handle(ctx context.Context, in Inbound, w http.ResponseWriter
 
 	// Always persist the log on exit with best-effort status.
 	var (
-		finalStatus  int
-		finalErrCode string
-		finalErrMsg  string
-		finalResp    []byte
-		inputTokens  int
-		outputTokens int
-		accountID    string
-		accountLabel string
-		upstream     string
+		finalStatus    int
+		finalErrCode   string
+		finalErrMsg    string
+		finalResp      []byte
+		inputTokens    int
+		outputTokens   int
+		accountID      string
+		accountLabel   string
+		upstream       string
+		firstTokenAt   time.Time
+		markFirstToken = func() {
+			if firstTokenAt.IsZero() {
+				firstTokenAt = time.Now()
+			}
+		}
 	)
 	defer func() {
 		rec.StatusCode = finalStatus
 		rec.ErrorCode = finalErrCode
 		rec.ErrorMessage = finalErrMsg
-		rec.LatencyMs = int(time.Since(start).Milliseconds())
+		total := time.Since(start)
+		rec.LatencyMs = int(total.Milliseconds())
+		rec.TotalSeconds = roundSeconds(total)
+		if !firstTokenAt.IsZero() {
+			rec.FirstTokenSeconds = roundSeconds(firstTokenAt.Sub(start))
+		} else if finalStatus > 0 {
+			// No downstream body bytes observed; fall back to total duration.
+			rec.FirstTokenSeconds = rec.TotalSeconds
+		}
 		rec.InputTokens = inputTokens
 		rec.OutputTokens = outputTokens
 		rec.AccountID = accountID
@@ -300,13 +314,15 @@ func (p *Pipeline) Handle(ctx context.Context, in Inbound, w http.ResponseWriter
 			finalResp = bodyBytes
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
-			_, _ = w.Write(bodyBytes)
+			if n, _ := w.Write(bodyBytes); n > 0 {
+				markFirstToken()
+			}
 			return fmt.Errorf("upstream status %d", status)
 		}
 
 		// Success path: translate and write.
 		if in.Stream {
-			finalStatus, finalResp, inputTokens, outputTokens, err = p.writeStream(w, in.Protocol, resp)
+			finalStatus, finalResp, inputTokens, outputTokens, err = p.writeStream(w, in.Protocol, resp, markFirstToken)
 			_ = resp.Body.Close()
 			release()
 			if err != nil {
@@ -345,7 +361,9 @@ func (p *Pipeline) Handle(ctx context.Context, in Inbound, w http.ResponseWriter
 		finalResp = out
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(out)
+		if n, _ := w.Write(out); n > 0 {
+			markFirstToken()
+		}
 		return nil
 	}
 }
@@ -478,7 +496,7 @@ func setStreamFlag(body []byte, stream bool) ([]byte, error) {
 	return json.Marshal(m)
 }
 
-func (p *Pipeline) writeStream(w http.ResponseWriter, protocol translate.Format, resp *http.Response) (status int, logged []byte, inTok, outTok int, err error) {
+func (p *Pipeline) writeStream(w http.ResponseWriter, protocol translate.Format, resp *http.Response, markFirstToken func()) (status int, logged []byte, inTok, outTok int, err error) {
 	flusher, _ := w.(http.Flusher)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -494,7 +512,7 @@ func (p *Pipeline) writeStream(w http.ResponseWriter, protocol translate.Format,
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	var (
-		claudeT *translate.ClaudeSSETranslator
+		claudeT   *translate.ClaudeSSETranslator
 		eventType string
 		dataLines []string
 	)
@@ -553,8 +571,12 @@ func (p *Pipeline) writeStream(w http.ResponseWriter, protocol translate.Format,
 			if et != "" {
 				// Also emit event: line for Responses clients that care.
 				evLine := []byte("event: " + et + "\n")
-				if _, wErr := w.Write(evLine); wErr != nil {
+				n, wErr := w.Write(evLine)
+				if wErr != nil {
 					return wErr
+				}
+				if n > 0 && markFirstToken != nil {
+					markFirstToken()
 				}
 				logBuf.Write(evLine)
 			}
@@ -566,8 +588,12 @@ func (p *Pipeline) writeStream(w http.ResponseWriter, protocol translate.Format,
 			if len(f) == 0 {
 				continue
 			}
-			if _, wErr := w.Write(f); wErr != nil {
+			n, wErr := w.Write(f)
+			if wErr != nil {
 				return wErr
+			}
+			if n > 0 && markFirstToken != nil {
+				markFirstToken()
 			}
 			logBuf.Write(f)
 			if flusher != nil {
@@ -704,3 +730,9 @@ func (p *Pipeline) acquire(ctx context.Context, accountID string) (func(), error
 	return p.Limiter.Acquire(ctx, accountID)
 }
 
+func roundSeconds(d time.Duration) float64 {
+	if d < 0 {
+		d = 0
+	}
+	return float64(int(d.Seconds()*100+0.5)) / 100
+}

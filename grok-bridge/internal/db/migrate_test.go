@@ -54,3 +54,23 @@ func TestOpenChmodsDBFileAndBusyTimeout(t *testing.T) {
 		t.Fatalf("busy_timeout=%d want >= 5000", timeout)
 	}
 }
+
+func TestMigrateAddsRequestTimingColumns(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "timing.db")
+	db, err := dbpkg.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := dbpkg.Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	for _, col := range []string{"first_token_seconds", "total_seconds"} {
+		var name string
+		err := db.QueryRowContext(ctx, `SELECT name FROM pragma_table_info('request_logs') WHERE name = ?`, col).Scan(&name)
+		if err != nil {
+			t.Fatalf("column %s: %v", col, err)
+		}
+	}
+}

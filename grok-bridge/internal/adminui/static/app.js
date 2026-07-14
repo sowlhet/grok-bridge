@@ -430,6 +430,11 @@
     return new Promise((r) => setTimeout(r, ms));
   }
 
+  function fmtSeconds(v) {
+    if (v == null || v === "" || Number.isNaN(Number(v))) return "—";
+    return Number(v).toFixed(2) + "s";
+  }
+
   // ---------- views ----------
   function renderLogin() {
     const form = el(
@@ -577,7 +582,7 @@
   function renderAccounts() {
     const rows =
       state.accounts.length === 0
-        ? [el("tr", null, el("td", { colspan: "8", className: "empty", text: "暂无账号。请导入 JSON 或使用 OAuth 登录。" }))]
+        ? [el("tr", null, el("td", { colspan: "9", className: "empty", text: "暂无账号。请导入 JSON 或使用 OAuth 登录。" }))]
         : state.accounts.map((a) =>
             el(
               "tr",
@@ -868,7 +873,7 @@
 
     const rows =
       state.logs.length === 0
-        ? [el("tr", null, el("td", { colspan: "8", className: "empty", text: "没有匹配的日志。" }))]
+        ? [el("tr", null, el("td", { colspan: "9", className: "empty", text: "没有匹配的日志。" }))]
         : state.logs.map((log) =>
             el(
               "tr",
@@ -882,7 +887,8 @@
               el("td", { className: "mono", text: log.model_requested || "—" }),
               el("td", { text: log.account_label || shortId(log.account_id) || "—" }),
               el("td", { text: log.api_key_label || shortId(log.api_key_id) || "—" }),
-              el("td", { className: "mono", text: log.latency_ms != null ? log.latency_ms + "ms" : "—" }),
+              el("td", { className: "mono", text: fmtSeconds(log.first_token_seconds) }),
+              el("td", { className: "mono", text: fmtSeconds(log.total_seconds != null && log.total_seconds !== 0 ? log.total_seconds : (log.latency_ms != null ? log.latency_ms / 1000 : null)) }),
               el("td", { className: "muted", text: log.error_message ? truncate(log.error_message, 40) : "" })
             )
           );
@@ -910,7 +916,8 @@
               el("th", { text: "模型" }),
               el("th", { text: "账号" }),
               el("th", { text: "API 密钥" }),
-              el("th", { text: "耗时" }),
+              el("th", { text: "首字" }),
+              el("th", { text: "总时间" }),
               el("th", { text: "错误" })
             )
           ),
@@ -1251,7 +1258,8 @@
       ["流式", log.stream ? "是" : "否"],
       ["账号", (log.account_label || "") + " " + (log.account_id || "")],
       ["API 密钥", (log.api_key_label || "") + " " + (log.api_key_id || "")],
-      ["耗时", log.latency_ms != null ? log.latency_ms + " ms" : "—"],
+      ["首字时间", fmtSeconds(log.first_token_seconds)],
+      ["总时间", fmtSeconds(log.total_seconds != null && log.total_seconds !== 0 ? log.total_seconds : (log.latency_ms != null ? log.latency_ms / 1000 : null))],
       ["Token 入/出", (log.input_tokens ?? "—") + " / " + (log.output_tokens ?? "—")],
       ["客户端 IP", log.client_ip],
       ["User-Agent", log.user_agent],

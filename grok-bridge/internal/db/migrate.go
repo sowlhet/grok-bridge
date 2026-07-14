@@ -82,6 +82,13 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 `,
 	},
+	{
+		version: 2,
+		sql: `
+ALTER TABLE request_logs ADD COLUMN first_token_seconds REAL NOT NULL DEFAULT 0;
+ALTER TABLE request_logs ADD COLUMN total_seconds REAL NOT NULL DEFAULT 0;
+`,
+	},
 }
 
 // Migrate applies pending schema migrations to db.

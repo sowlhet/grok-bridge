@@ -458,13 +458,13 @@ func (s *Server) handleAdminOAuthStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"device_code":                dc.DeviceCode,
-		"user_code":                  dc.UserCode,
-		"verification_uri":           dc.VerificationURI,
-		"verification_uri_complete":  dc.VerificationURIComplete,
-		"expires_in":                 dc.ExpiresIn,
-		"interval":                   dc.Interval,
-		"token_endpoint":             dc.TokenEndpoint,
+		"device_code":               dc.DeviceCode,
+		"user_code":                 dc.UserCode,
+		"verification_uri":          dc.VerificationURI,
+		"verification_uri_complete": dc.VerificationURIComplete,
+		"expires_in":                dc.ExpiresIn,
+		"interval":                  dc.Interval,
+		"token_endpoint":            dc.TokenEndpoint,
 	})
 }
 
@@ -653,50 +653,54 @@ func (s *Server) handleAdminListLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	// List without huge bodies by default — strip body fields for list view.
 	type logListItem struct {
-		ID             string `json:"id"`
-		RequestID      string `json:"request_id"`
-		CreatedAt      string `json:"created_at"`
-		APIKeyID       string `json:"api_key_id"`
-		APIKeyLabel    string `json:"api_key_label"`
-		AccountID      string `json:"account_id"`
-		AccountLabel   string `json:"account_label"`
-		Protocol       string `json:"protocol"`
-		ModelRequested string `json:"model_requested"`
-		ModelUpstream  string `json:"model_upstream"`
-		Stream         bool   `json:"stream"`
-		StatusCode     int    `json:"status_code"`
-		ErrorCode      string `json:"error_code"`
-		ErrorMessage   string `json:"error_message"`
-		LatencyMs      int    `json:"latency_ms"`
-		InputTokens    int    `json:"input_tokens"`
-		OutputTokens   int    `json:"output_tokens"`
-		ClientIP       string `json:"client_ip"`
-		UserAgent      string `json:"user_agent"`
-		Path           string `json:"path"`
+		ID                string  `json:"id"`
+		RequestID         string  `json:"request_id"`
+		CreatedAt         string  `json:"created_at"`
+		APIKeyID          string  `json:"api_key_id"`
+		APIKeyLabel       string  `json:"api_key_label"`
+		AccountID         string  `json:"account_id"`
+		AccountLabel      string  `json:"account_label"`
+		Protocol          string  `json:"protocol"`
+		ModelRequested    string  `json:"model_requested"`
+		ModelUpstream     string  `json:"model_upstream"`
+		Stream            bool    `json:"stream"`
+		StatusCode        int     `json:"status_code"`
+		ErrorCode         string  `json:"error_code"`
+		ErrorMessage      string  `json:"error_message"`
+		LatencyMs         int     `json:"latency_ms"`
+		FirstTokenSeconds float64 `json:"first_token_seconds"`
+		TotalSeconds      float64 `json:"total_seconds"`
+		InputTokens       int     `json:"input_tokens"`
+		OutputTokens      int     `json:"output_tokens"`
+		ClientIP          string  `json:"client_ip"`
+		UserAgent         string  `json:"user_agent"`
+		Path              string  `json:"path"`
 	}
 	items := make([]logListItem, 0, len(list))
 	for _, rec := range list {
 		items = append(items, logListItem{
-			ID:             rec.ID,
-			RequestID:      rec.RequestID,
-			CreatedAt:      rec.CreatedAt,
-			APIKeyID:       rec.APIKeyID,
-			APIKeyLabel:    rec.APIKeyLabel,
-			AccountID:      rec.AccountID,
-			AccountLabel:   rec.AccountLabel,
-			Protocol:       rec.Protocol,
-			ModelRequested: rec.ModelRequested,
-			ModelUpstream:  rec.ModelUpstream,
-			Stream:         rec.Stream,
-			StatusCode:     rec.StatusCode,
-			ErrorCode:      rec.ErrorCode,
-			ErrorMessage:   rec.ErrorMessage,
-			LatencyMs:      rec.LatencyMs,
-			InputTokens:    rec.InputTokens,
-			OutputTokens:   rec.OutputTokens,
-			ClientIP:       rec.ClientIP,
-			UserAgent:      rec.UserAgent,
-			Path:           rec.Path,
+			ID:                rec.ID,
+			RequestID:         rec.RequestID,
+			CreatedAt:         rec.CreatedAt,
+			APIKeyID:          rec.APIKeyID,
+			APIKeyLabel:       rec.APIKeyLabel,
+			AccountID:         rec.AccountID,
+			AccountLabel:      rec.AccountLabel,
+			Protocol:          rec.Protocol,
+			ModelRequested:    rec.ModelRequested,
+			ModelUpstream:     rec.ModelUpstream,
+			Stream:            rec.Stream,
+			StatusCode:        rec.StatusCode,
+			ErrorCode:         rec.ErrorCode,
+			ErrorMessage:      rec.ErrorMessage,
+			LatencyMs:         rec.LatencyMs,
+			FirstTokenSeconds: rec.FirstTokenSeconds,
+			TotalSeconds:      rec.TotalSeconds,
+			InputTokens:       rec.InputTokens,
+			OutputTokens:      rec.OutputTokens,
+			ClientIP:          rec.ClientIP,
+			UserAgent:         rec.UserAgent,
+			Path:              rec.Path,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"logs": items})
@@ -724,14 +728,14 @@ func (s *Server) handleAdminGetSettings(w http.ResponseWriter, r *http.Request) 
 	logBodies, retention := s.loadRuntimeSettings(r)
 	s.mu.Lock()
 	out := map[string]any{
-		"log_bodies":           logBodies,
-		"retention":            retention,
-		"log_retention_days":   retention,
-		"http_proxy":           s.httpProxy,
-		"scheduling":           s.scheduling,
-		"max_concurrency":      s.maxConcurrency,
-		"account_concurrency":  s.accountConcurrency,
-		"max_account_switches": s.maxAccountSwitches,
+		"log_bodies":            logBodies,
+		"retention":             retention,
+		"log_retention_days":    retention,
+		"http_proxy":            s.httpProxy,
+		"scheduling":            s.scheduling,
+		"max_concurrency":       s.maxConcurrency,
+		"account_concurrency":   s.accountConcurrency,
+		"max_account_switches":  s.maxAccountSwitches,
 		"max_transient_retries": s.maxTransientRetries,
 	}
 	s.mu.Unlock()
@@ -740,16 +744,16 @@ func (s *Server) handleAdminGetSettings(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleAdminPutSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		LogBodies            *string `json:"log_bodies"`
-		Retention            *int    `json:"retention"`
-		Retention2           *int    `json:"log_retention_days"`
-		AdminPassword        *string `json:"admin_password"`
-		HTTPProxy            *string `json:"http_proxy"`
-		Scheduling           *string `json:"scheduling"`
-		MaxConcurrency       *int    `json:"max_concurrency"`
-		AccountConcurrency   *int    `json:"account_concurrency"`
-		MaxAccountSwitches   *int    `json:"max_account_switches"`
-		MaxTransientRetries  *int    `json:"max_transient_retries"`
+		LogBodies           *string `json:"log_bodies"`
+		Retention           *int    `json:"retention"`
+		Retention2          *int    `json:"log_retention_days"`
+		AdminPassword       *string `json:"admin_password"`
+		HTTPProxy           *string `json:"http_proxy"`
+		Scheduling          *string `json:"scheduling"`
+		MaxConcurrency      *int    `json:"max_concurrency"`
+		AccountConcurrency  *int    `json:"account_concurrency"`
+		MaxAccountSwitches  *int    `json:"max_account_switches"`
+		MaxTransientRetries *int    `json:"max_transient_retries"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})

@@ -13,28 +13,32 @@ import (
 
 // LogRecord is one request_logs row.
 type LogRecord struct {
-	ID              string
-	RequestID       string
-	CreatedAt       string
-	APIKeyID        string
-	APIKeyLabel     string
-	AccountID       string
-	AccountLabel    string
-	Protocol        string
-	ModelRequested  string
-	ModelUpstream   string
-	Stream          bool
-	StatusCode      int
-	ErrorCode       string
-	ErrorMessage    string
-	LatencyMs       int
-	InputTokens     int
-	OutputTokens    int
-	ClientIP        string
-	UserAgent       string
-	Path            string
-	RequestBody     string
-	ResponseBody    string
+	ID             string `json:"id"`
+	RequestID      string `json:"request_id"`
+	CreatedAt      string `json:"created_at"`
+	APIKeyID       string `json:"api_key_id"`
+	APIKeyLabel    string `json:"api_key_label"`
+	AccountID      string `json:"account_id"`
+	AccountLabel   string `json:"account_label"`
+	Protocol       string `json:"protocol"`
+	ModelRequested string `json:"model_requested"`
+	ModelUpstream  string `json:"model_upstream"`
+	Stream         bool   `json:"stream"`
+	StatusCode     int    `json:"status_code"`
+	ErrorCode      string `json:"error_code"`
+	ErrorMessage   string `json:"error_message"`
+	LatencyMs      int    `json:"latency_ms"`
+	// FirstTokenSeconds is time-to-first-token / first response byte in seconds.
+	FirstTokenSeconds float64 `json:"first_token_seconds"`
+	// TotalSeconds is end-to-end request duration in seconds.
+	TotalSeconds float64 `json:"total_seconds"`
+	InputTokens  int     `json:"input_tokens"`
+	OutputTokens int     `json:"output_tokens"`
+	ClientIP     string  `json:"client_ip"`
+	UserAgent    string  `json:"user_agent"`
+	Path         string  `json:"path"`
+	RequestBody  string  `json:"request_body"`
+	ResponseBody string  `json:"response_body"`
 }
 
 // LogFilter selects request logs for Query.
@@ -80,7 +84,8 @@ const logColumns = `
   account_id, account_label,
   protocol, model_requested, model_upstream,
   stream, status_code, error_code, error_message,
-  latency_ms, input_tokens, output_tokens,
+  latency_ms, first_token_seconds, total_seconds,
+  input_tokens, output_tokens,
   client_ip, user_agent, path,
   request_body, response_body`
 
@@ -95,7 +100,8 @@ func scanLog(scanner interface {
 		&r.AccountID, &r.AccountLabel,
 		&r.Protocol, &r.ModelRequested, &r.ModelUpstream,
 		&stream, &r.StatusCode, &r.ErrorCode, &r.ErrorMessage,
-		&r.LatencyMs, &r.InputTokens, &r.OutputTokens,
+		&r.LatencyMs, &r.FirstTokenSeconds, &r.TotalSeconds,
+		&r.InputTokens, &r.OutputTokens,
 		&r.ClientIP, &r.UserAgent, &r.Path,
 		&r.RequestBody, &r.ResponseBody,
 	)
@@ -125,16 +131,18 @@ INSERT INTO request_logs (
   account_id, account_label,
   protocol, model_requested, model_upstream,
   stream, status_code, error_code, error_message,
-  latency_ms, input_tokens, output_tokens,
+  latency_ms, first_token_seconds, total_seconds,
+  input_tokens, output_tokens,
   client_ip, user_agent, path,
   request_body, response_body
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `, rec.ID, rec.RequestID, rec.CreatedAt,
 		rec.APIKeyID, rec.APIKeyLabel,
 		rec.AccountID, rec.AccountLabel,
 		rec.Protocol, rec.ModelRequested, rec.ModelUpstream,
 		stream, rec.StatusCode, rec.ErrorCode, rec.ErrorMessage,
-		rec.LatencyMs, rec.InputTokens, rec.OutputTokens,
+		rec.LatencyMs, rec.FirstTokenSeconds, rec.TotalSeconds,
+		rec.InputTokens, rec.OutputTokens,
 		rec.ClientIP, rec.UserAgent, rec.Path,
 		rec.RequestBody, rec.ResponseBody,
 	)
