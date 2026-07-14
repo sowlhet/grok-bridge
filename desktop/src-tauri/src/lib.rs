@@ -58,8 +58,17 @@ fn start_service(app: &AppHandle) -> Result<(), String> {
     mgr.start()?;
     let admin = mgr.admin_url();
     drop(mgr);
+    // Navigate immediately and once more shortly after, in case WebView wasn't ready.
     navigate_main_to_admin(app, &admin);
     show_main_window(app);
+    let app2 = app.clone();
+    let admin2 = admin.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        navigate_main_to_admin(&app2, &admin2);
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        navigate_main_to_admin(&app2, &admin2);
+    });
     Ok(())
 }
 

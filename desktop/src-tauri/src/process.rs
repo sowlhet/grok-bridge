@@ -5,6 +5,9 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use crate::paths;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,8 +86,15 @@ impl SidecarManager {
             .arg(&config)
             .env("GROK_BRIDGE_LISTEN", &listen)
             .env("GROK_BRIDGE_ADMIN_PASSWORD", &password)
+            .stdin(Stdio::null())
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(err_file));
+        // Prevent a black console window for the Go sidecar on Windows.
+        #[cfg(windows)]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
 
         let child = cmd
             .spawn()
@@ -123,24 +133,30 @@ impl SidecarManager {
     }
 
     fn health_ok(&self) -> bool {
-        let url = format!("{}/healthz", self.base_url.trim_end_matches('/'));
-        match reqwest::blocking::Client::builder()
+        let client = match reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(2))
+            .redirect(reqwest::redirect::Policy::limited(5))
             .build()
-            .and_then(|c| c.get(url).send())
         {
-            Ok(resp) => resp.status().is_success(),
-            Err(_) => {
-                // Fallback: admin page may still be up even if health path differs.
-                let admin = format!("{}/admin/", self.base_url.trim_end_matches('/'));
-                reqwest::blocking::Client::builder()
-                    .timeout(Duration::from_secs(2))
-                    .build()
-                    .and_then(|c| c.get(admin).send())
-                    .map(|r| r.status().is_success() || r.status().as_u16() == 404)
-                    .unwrap_or(false)
-            }
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        let health = format!("{}/healthz", self.base_url.trim_end_matches('/'));
+        let admin = format!("{}/admin/", self.base_url.trim_end_matches('/'));
+        let health_ok = client
+            .get(&health)
+            .send()
+            .map(|r| r.status().is_success())
+            .unwrap_or(false);
+        if !health_ok {
+            return false;
         }
+        // Ensure admin UI is actually ready (avoid navigating to a 404 root page).
+        client
+            .get(&admin)
+            .send()
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
     }
 }
 
