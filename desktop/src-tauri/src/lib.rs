@@ -13,6 +13,7 @@ const TRAY_SHOW: &str = "tray_show";
 const TRAY_START: &str = "tray_start";
 const TRAY_STOP: &str = "tray_stop";
 const TRAY_RESTART: &str = "tray_restart";
+const TRAY_OPEN_DATA: &str = "tray_open_data";
 const TRAY_QUIT: &str = "tray_quit";
 
 struct AppState {
@@ -74,13 +75,21 @@ fn restart_service(app: &AppHandle) -> Result<(), String> {
     start_service(app)
 }
 
+fn open_data_dir() -> Result<(), String> {
+    let dir = paths::data_dir()?;
+    // Ensure directory exists before revealing it.
+    let _ = paths::data_dir()?;
+    open::that(&dir).map_err(|e| format!("open data dir {}: {e}", dir.display()))
+}
+
 fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, TRAY_SHOW, "打开管理面板", true, None::<&str>)?;
     let start = MenuItem::with_id(app, TRAY_START, "启动服务", true, None::<&str>)?;
     let stop = MenuItem::with_id(app, TRAY_STOP, "停止服务", true, None::<&str>)?;
     let restart = MenuItem::with_id(app, TRAY_RESTART, "重启服务", true, None::<&str>)?;
+    let open_data = MenuItem::with_id(app, TRAY_OPEN_DATA, "打开数据目录", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, TRAY_QUIT, "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &start, &stop, &restart, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &start, &stop, &restart, &open_data, &quit])?;
 
     let icon = app
         .default_window_icon()
@@ -106,6 +115,11 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
             TRAY_RESTART => {
                 if let Err(err) = restart_service(app) {
                     eprintln!("restart service failed: {err}");
+                }
+            }
+            TRAY_OPEN_DATA => {
+                if let Err(err) = open_data_dir() {
+                    eprintln!("open data dir failed: {err}");
                 }
             }
             TRAY_QUIT => {
