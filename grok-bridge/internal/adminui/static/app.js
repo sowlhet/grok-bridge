@@ -160,8 +160,8 @@
   async function loadLogs() {
     const q = new URLSearchParams();
     const f = state.logFilters;
-    if (f.from) q.set("from", f.from);
-    if (f.to) q.set("to", f.to);
+    if (f.from) q.set("from", localInputToUTC(f.from));
+    if (f.to) q.set("to", localInputToUTC(f.to));
     if (f.account_id) q.set("account_id", f.account_id);
     if (f.model) q.set("model", f.model);
     if (f.status) q.set("status", f.status);
@@ -796,10 +796,10 @@
       "div",
       { className: "filters" },
       field(
-        "开始时间",
+        "开始时间 (UTC+8)",
         el("input", {
-          type: "text",
-          placeholder: "RFC3339",
+          type: "datetime-local",
+          step: "60",
           value: f.from,
           oninput: (e) => {
             f.from = e.target.value;
@@ -807,10 +807,10 @@
         })
       ),
       field(
-        "结束时间",
+        "结束时间 (UTC+8)",
         el("input", {
-          type: "text",
-          placeholder: "RFC3339",
+          type: "datetime-local",
+          step: "60",
           value: f.to,
           oninput: (e) => {
             f.to = e.target.value;
@@ -1278,7 +1278,7 @@
     const kvPairs = [
       ["ID", log.id],
       ["Request ID", log.request_id],
-      ["时间", log.created_at],
+      ["时间 (UTC+8)", fmtTime(log.created_at)],
       ["状态码", log.status_code],
       ["协议", log.protocol],
       ["路径", log.path],
@@ -1341,15 +1341,60 @@
     return id.length > 12 ? id.slice(0, 8) + "…" : id;
   }
 
+  const DISPLAY_TZ = "Asia/Shanghai"; // UTC+8
+
   function fmtTime(s) {
     if (!s) return "—";
     try {
       const d = new Date(s);
       if (isNaN(d.getTime())) return s;
-      return d.toLocaleString();
+      return d.toLocaleString("zh-CN", {
+        timeZone: DISPLAY_TZ,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      });
     } catch (_) {
       return s;
     }
+  }
+
+  // Convert datetime-local value (interpreted as UTC+8 wall time) to RFC3339 UTC for API.
+  function localInputToUTC(v) {
+    if (!v) return "";
+    // v: "YYYY-MM-DDTHH:mm" or with seconds
+    const m = String(v).match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/);
+    if (!m) return v;
+    const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+    const h = Number(m[4]), mi = Number(m[5]), se = Number(m[6] || "0");
+    // Treat as UTC+8 wall clock -> UTC
+    const utcMs = Date.UTC(y, mo - 1, d, h - 8, mi, se);
+    return new Date(utcMs).toISOString().replace(/\.\d{3}Z$/, "Z");
+  }
+
+  // Convert API UTC time to datetime-local value in UTC+8 for input controls.
+  function utcToLocalInput(s) {
+    if (!s) return "";
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return "";
+    // Shift to UTC+8 then format as local-like YYYY-MM-DDTHH:mm
+    const sh = new Date(d.getTime() + 8 * 3600 * 1000);
+    const pad = (n) => String(n).padStart(2, "0");
+    return (
+      sh.getUTCFullYear() +
+      "-" +
+      pad(sh.getUTCMonth() + 1) +
+      "-" +
+      pad(sh.getUTCDate()) +
+      "T" +
+      pad(sh.getUTCHours()) +
+      ":" +
+      pad(sh.getUTCMinutes())
+    );
   }
 
   function truncate(s, n) {

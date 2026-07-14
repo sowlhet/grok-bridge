@@ -475,7 +475,8 @@ tr.clickable {
 }
 
 .filters .form-group input,
-.filters .form-group select {
+.filters .form-group select,
+.filters .form-group input[type="datetime-local"] {
   min-width: 140px;
 }
 
@@ -723,4 +724,9 @@ pre.body-block {
 @media (max-width: 720px) {
   .form-row { grid-template-columns: 1fr; }
   .shell { grid-template-columns: 1fr; }
+}
+
+
+.filters .form-group input[type="datetime-local"] {
+  min-width: 190px;
 }
