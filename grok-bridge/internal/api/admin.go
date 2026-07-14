@@ -85,6 +85,7 @@ func (s *Server) registerAdminRoutesOn(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/api/dashboard", s.requireAdmin(s.handleAdminDashboard))
 	mux.HandleFunc("GET /admin/api/accounts", s.requireAdmin(s.handleAdminListAccounts))
 	mux.HandleFunc("POST /admin/api/accounts/import", s.requireAdmin(s.handleAdminImportAccounts))
+	mux.HandleFunc("POST /admin/api/accounts/bulk", s.requireAdmin(s.handleAdminBulkAccounts))
 	mux.HandleFunc("GET /admin/api/accounts/{id}/export", s.requireAdmin(s.handleAdminExportAccount))
 	mux.HandleFunc("PATCH /admin/api/accounts/{id}", s.requireAdmin(s.handleAdminPatchAccount))
 	mux.HandleFunc("DELETE /admin/api/accounts/{id}", s.requireAdmin(s.handleAdminDeleteAccount))
@@ -347,6 +348,51 @@ func (s *Server) handleAdminImportAccounts(w http.ResponseWriter, r *http.Reques
 		"inserted": inserted,
 		"updated":  updated,
 	})
+}
+
+
+
+func (s *Server) handleAdminBulkAccounts(w http.ResponseWriter, r *http.Request) {
+	if s.accounts == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "accounts not configured"})
+		return
+	}
+	var body struct {
+		Action string   `json:"action"`
+		IDs    []string `json:"ids"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+		return
+	}
+	if len(body.IDs) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "ids required"})
+		return
+	}
+	if len(body.IDs) > 5000 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "too many ids (max 5000)"})
+		return
+	}
+	var (
+		n   int64
+		err error
+	)
+	switch strings.TrimSpace(body.Action) {
+	case "enable":
+		n, err = s.accounts.BulkSetStatus(r.Context(), body.IDs, "active", "")
+	case "disable":
+		n, err = s.accounts.BulkSetStatus(r.Context(), body.IDs, "disabled", "")
+	case "delete":
+		n, err = s.accounts.BulkDelete(r.Context(), body.IDs)
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "action must be enable|disable|delete"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"affected": n, "action": body.Action})
 }
 
 func readImportPayload(r *http.Request) ([]byte, error) {

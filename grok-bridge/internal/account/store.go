@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -350,4 +351,71 @@ INSERT INTO accounts (
 		return Account{}, false, fmt.Errorf("account %q missing after insert", id)
 	}
 	return *a, true, nil
+}
+
+
+// BulkSetStatus updates status for many account ids.
+func (s *Store) BulkSetStatus(ctx context.Context, ids []string, status, errMsg string) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	if status != "active" && status != "disabled" && status != "error" {
+		return 0, fmt.Errorf("invalid status %q", status)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var n int64
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		res, err := tx.ExecContext(ctx, `
+UPDATE accounts
+SET status = ?, error_message = ?, updated_at = ?
+WHERE id = ?
+`, status, errMsg, now, id)
+		if err != nil {
+			return 0, err
+		}
+		c, _ := res.RowsAffected()
+		n += c
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// BulkDelete deletes many account ids.
+func (s *Store) BulkDelete(ctx context.Context, ids []string) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var n int64
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		res, err := tx.ExecContext(ctx, `DELETE FROM accounts WHERE id = ?`, id)
+		if err != nil {
+			return 0, err
+		}
+		c, _ := res.RowsAffected()
+		n += c
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return n, nil
 }

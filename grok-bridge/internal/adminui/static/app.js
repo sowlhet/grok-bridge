@@ -663,14 +663,139 @@
   }
 
   function renderAccounts() {
+    const f = state.accountFilters || { q: "", status: "all", page: 1, pageSize: 50 };
+    if (!f.pageSize) f.pageSize = 50;
+    if (!f.page) f.page = 1;
+    state.accountFilters = f;
+
+    const stats = accountStats(state.accounts || []);
+    const filtered = filteredAccounts();
+    const pageSize = Math.max(10, Math.min(200, Number(f.pageSize) || 50));
+    const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+    if (f.page > totalPages) f.page = totalPages;
+    if (f.page < 1) f.page = 1;
+    const startIdx = (f.page - 1) * pageSize;
+    const pageItems = filtered.slice(startIdx, startIdx + pageSize);
+    const selectedIds = selectedAccountIdList();
+    const pageAllSelected = pageItems.length > 0 && pageItems.every((a) => state.selectedAccountIds[a.id]);
+
+    const fileInput = el("input", {
+      type: "file",
+      accept: ".json,application/json",
+      className: "hidden",
+      id: "import-file",
+      onchange: (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (file) importAccountsFile(file);
+        e.target.value = "";
+      },
+    });
+
+    const filters = el(
+      "div",
+      { className: "filters account-filters" },
+      field(
+        "搜索",
+        el("input", {
+          type: "search",
+          placeholder: "邮箱 / 备注 / ID",
+          value: f.q || "",
+          oninput: (e) => {
+            f.q = e.target.value;
+            f.page = 1;
+            render();
+          },
+        })
+      ),
+      field(
+        "状态",
+        el(
+          "select",
+          {
+            value: f.status || "all",
+            onchange: (e) => {
+              f.status = e.target.value;
+              f.page = 1;
+              render();
+            },
+          },
+          ...[
+            ["all", "全部"],
+            ["active", "启用中"],
+            ["disabled", "已禁用"],
+            ["error", "错误"],
+            ["expired", "已过期"],
+          ].map(([v, lab]) => el("option", { value: v, text: lab, selected: (f.status || "all") === v }))
+        )
+      ),
+      field(
+        "每页",
+        el(
+          "select",
+          {
+            onchange: (e) => {
+              f.pageSize = Number(e.target.value) || 50;
+              f.page = 1;
+              render();
+            },
+          },
+          ...[20, 50, 100, 200].map((n) =>
+            el("option", { value: String(n), text: String(n), selected: pageSize === n })
+          )
+        )
+      ),
+      el("div", {
+        className: "muted account-filter-meta",
+        text: "筛选 " + filtered.length + " / 总 " + stats.total + " · 启用 " + stats.active + " · 禁用 " + stats.disabled + " · 错误 " + stats.error + " · 过期 " + stats.expired,
+      })
+    );
+
+    const bulkBar = el(
+      "div",
+      { className: "bulk-bar" },
+      el("span", { className: "muted", text: "已选 " + selectedIds.length + " 个" }),
+      el("button", {
+        type: "button",
+        className: "btn btn-sm",
+        text: "批量启用",
+        disabled: !selectedIds.length,
+        onclick: () => bulkAccounts("enable"),
+      }),
+      el("button", {
+        type: "button",
+        className: "btn btn-sm",
+        text: "批量禁用",
+        disabled: !selectedIds.length,
+        onclick: () => bulkAccounts("disable"),
+      }),
+      el("button", {
+        type: "button",
+        className: "btn btn-sm btn-danger",
+        text: "批量删除",
+        disabled: !selectedIds.length,
+        onclick: () => bulkAccounts("delete"),
+      }),
+      el("button", {
+        type: "button",
+        className: "btn btn-sm btn-ghost",
+        text: "清空选择",
+        disabled: !selectedIds.length,
+        onclick: () => {
+          clearAccountSelection();
+          render();
+        },
+      })
+    );
+
     const rows =
-      state.accounts.length === 0
-        ? [el("tr", null, el("td", { colspan: "6", className: "empty", text: "暂无账号。请导入 JSON 或使用 OAuth 登录。" }))]
-        : state.accounts.map((a) => {
+      pageItems.length === 0
+        ? [el("tr", null, el("td", { colspan: "7", className: "empty", text: stats.total ? "没有符合筛选条件的账号。" : "暂无账号。请导入 JSON 或使用 OAuth 登录。" }))]
+        : pageItems.map((a) => {
             const label = a.label || a.email || "—";
             const email = a.email || "";
             const expireFull = a.expires_at ? fmtTime(a.expires_at) : "—";
             const token = a.access_token_suffix || "";
+            const checked = !!state.selectedAccountIds[a.id];
             const tip = [
               "ID: " + (a.id || "—"),
               "邮箱: " + (email || "—"),
@@ -679,15 +804,31 @@
               "过期: " + expireFull,
               "Token: " + (token || "—"),
               "Refresh: " + (a.has_refresh_token ? "有" : "无"),
-            ].join("\n");
+              a.error_message ? "错误: " + a.error_message : "",
+            ]
+              .filter(Boolean)
+              .join("\n");
             return el(
               "tr",
-              { title: tip },
+              { title: tip, className: checked ? "row-selected" : "" },
+              el(
+                "td",
+                null,
+                el("input", {
+                  type: "checkbox",
+                  checked,
+                  onchange: (e) => {
+                    if (e.target.checked) state.selectedAccountIds[a.id] = true;
+                    else delete state.selectedAccountIds[a.id];
+                    render();
+                  },
+                })
+              ),
               el(
                 "td",
                 { title: tip },
                 el("div", { className: "cell-ellipsis", text: label, title: label }),
-                el("div", { className: "cell-sub mono", text: shortId(a.id), title: a.id || "" })
+                el("div", { className: "cell-sub mono", text: email || shortId(a.id), title: email || a.id || "" })
               ),
               el("td", null, badge(a.status)),
               el(
@@ -707,7 +848,11 @@
                 })
               ),
               tipCell(shortExpire(a.expires_at), expireFull, "mono muted"),
-              tipCell(token ? ("…" + String(token).slice(-8)) : (a.has_refresh_token ? "有RT" : "—"), (token || "—") + " / refresh=" + (a.has_refresh_token ? "yes" : "no"), "mono muted"),
+              tipCell(
+                token ? "…" + String(token).slice(-8) : a.has_refresh_token ? "有RT" : "—",
+                (token || "—") + " / refresh=" + (a.has_refresh_token ? "yes" : "no"),
+                "mono muted"
+              ),
               el(
                 "td",
                 null,
@@ -755,17 +900,34 @@
             );
           });
 
-    const fileInput = el("input", {
-      type: "file",
-      accept: ".json,application/json",
-      className: "hidden",
-      id: "import-file",
-      onchange: (e) => {
-        const f = e.target.files && e.target.files[0];
-        if (f) importAccountsFile(f);
-        e.target.value = "";
-      },
-    });
+    const pager = el(
+      "div",
+      { className: "pager" },
+      el("button", {
+        type: "button",
+        className: "btn btn-sm",
+        text: "上一页",
+        disabled: f.page <= 1,
+        onclick: () => {
+          f.page = Math.max(1, f.page - 1);
+          render();
+        },
+      }),
+      el("span", {
+        className: "muted",
+        text: "第 " + f.page + " / " + totalPages + " 页（本页 " + pageItems.length + " 条）",
+      }),
+      el("button", {
+        type: "button",
+        className: "btn btn-sm",
+        text: "下一页",
+        disabled: f.page >= totalPages,
+        onclick: () => {
+          f.page = Math.min(totalPages, f.page + 1);
+          render();
+        },
+      })
+    );
 
     const content = el(
       "div",
@@ -795,6 +957,8 @@
           })
         )
       ),
+      filters,
+      bulkBar,
       el(
         "div",
         { className: "table-wrap" },
@@ -807,6 +971,23 @@
             el(
               "tr",
               null,
+              el(
+                "th",
+                { style: "width:36px" },
+                el("input", {
+                  type: "checkbox",
+                  title: "全选本页",
+                  checked: pageAllSelected,
+                  onchange: (e) => {
+                    const on = !!e.target.checked;
+                    pageItems.forEach((a) => {
+                      if (on) state.selectedAccountIds[a.id] = true;
+                      else delete state.selectedAccountIds[a.id];
+                    });
+                    render();
+                  },
+                })
+              ),
               el("th", { text: "账号" }),
               el("th", { text: "状态" }),
               el("th", { text: "权重" }),
@@ -817,7 +998,8 @@
           ),
           el("tbody", null, ...rows)
         )
-      )
+      ),
+      pager
     );
     renderShell(content);
   }

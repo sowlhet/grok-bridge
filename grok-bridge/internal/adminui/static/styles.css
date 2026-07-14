@@ -834,3 +834,44 @@ th, td {
   width: 64px;
   padding: 4px 6px;
 }
+
+
+.account-filters {
+  align-items: end;
+}
+
+.account-filter-meta {
+  min-width: 240px;
+  line-height: 1.35;
+  padding-bottom: 6px;
+}
+
+.bulk-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgba(255,255,255,0.02);
+}
+
+.pager {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.row-selected {
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.accounts-table th:first-child,
+.accounts-table td:first-child {
+  width: 36px;
+  text-align: center;
+}
