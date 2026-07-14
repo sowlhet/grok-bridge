@@ -86,6 +86,8 @@ func (s *Server) registerAdminRoutesOn(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/api/accounts", s.requireAdmin(s.handleAdminListAccounts))
 	mux.HandleFunc("POST /admin/api/accounts/import", s.requireAdmin(s.handleAdminImportAccounts))
 	mux.HandleFunc("POST /admin/api/accounts/bulk", s.requireAdmin(s.handleAdminBulkAccounts))
+	mux.HandleFunc("POST /admin/api/accounts/bulk-refresh", s.requireAdmin(s.handleAdminBulkRefreshAccounts))
+	mux.HandleFunc("GET /admin/api/accounts/export", s.requireAdmin(s.handleAdminExportAccountsFiltered))
 	mux.HandleFunc("GET /admin/api/accounts/{id}/export", s.requireAdmin(s.handleAdminExportAccount))
 	mux.HandleFunc("PATCH /admin/api/accounts/{id}", s.requireAdmin(s.handleAdminPatchAccount))
 	mux.HandleFunc("DELETE /admin/api/accounts/{id}", s.requireAdmin(s.handleAdminDeleteAccount))
@@ -511,6 +513,226 @@ func (s *Server) handleAdminDeleteAccount(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+
+
+func (s *Server) handleAdminBulkRefreshAccounts(w http.ResponseWriter, r *http.Request) {
+	if s.accounts == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "accounts not configured"})
+		return
+	}
+	if s.oauth == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "oauth client not configured"})
+		return
+	}
+	var body struct {
+		IDs            []string `json:"ids"`
+		OnlyExpiring   bool     `json:"only_expiring"`
+		WithinMinutes  int      `json:"within_minutes"`
+		Concurrency    int      `json:"concurrency"`
+		Limit          int      `json:"limit"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+		return
+	}
+	if body.WithinMinutes <= 0 {
+		body.WithinMinutes = 60
+	}
+	if body.Concurrency <= 0 {
+		body.Concurrency = 5
+	}
+	if body.Concurrency > 10 {
+		body.Concurrency = 10
+	}
+	if body.Limit <= 0 {
+		body.Limit = 200
+	}
+	if body.Limit > 1000 {
+		body.Limit = 1000
+	}
+
+	// Build candidate set.
+	var candidates []account.Account
+	if len(body.IDs) > 0 {
+		for _, id := range body.IDs {
+			a, err := s.accounts.Get(r.Context(), id)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+				return
+			}
+			if a != nil {
+				candidates = append(candidates, *a)
+			}
+		}
+	} else {
+		list, err := s.accounts.List(r.Context())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		candidates = list
+	}
+
+	cutoff := time.Now().UTC().Add(time.Duration(body.WithinMinutes) * time.Minute)
+	var targets []account.Account
+	for _, a := range candidates {
+		if strings.TrimSpace(a.RefreshToken) == "" {
+			continue
+		}
+		if body.OnlyExpiring {
+			if strings.TrimSpace(a.ExpiresAt) == "" {
+				// unknown expiry: include for safety when only_expiring
+				targets = append(targets, a)
+				continue
+			}
+			exp, err := time.Parse(time.RFC3339, a.ExpiresAt)
+			if err != nil {
+				exp, err = time.Parse(time.RFC3339Nano, a.ExpiresAt)
+			}
+			if err != nil || exp.After(cutoff) {
+				// still valid beyond window
+				if err == nil && exp.After(cutoff) {
+					continue
+				}
+			}
+		}
+		targets = append(targets, a)
+		if len(targets) >= body.Limit {
+			break
+		}
+	}
+
+	type itemResult struct {
+		ID     string `json:"id"`
+		Email  string `json:"email"`
+		OK     bool   `json:"ok"`
+		Error  string `json:"error,omitempty"`
+	}
+	results := make([]itemResult, len(targets))
+	sem := make(chan struct{}, body.Concurrency)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	okN, failN := 0, 0
+
+	for i, acc := range targets {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, acc account.Account) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			res := itemResult{ID: acc.ID, Email: acc.Email}
+			td, err := s.oauth.Refresh(r.Context(), acc.TokenEndpoint, acc.RefreshToken)
+			if err != nil {
+				_ = s.accounts.SetStatus(r.Context(), acc.ID, "error", "refresh failed: "+err.Error())
+				res.OK = false
+				res.Error = err.Error()
+			} else {
+				refresh := td.RefreshToken
+				if refresh == "" {
+					refresh = acc.RefreshToken
+				}
+				idToken := td.IDToken
+				if idToken == "" {
+					idToken = acc.IDToken
+				}
+				lastRefresh := time.Now().UTC().Format(time.RFC3339)
+				if err := s.accounts.UpdateTokens(r.Context(), acc.ID, td.AccessToken, refresh, idToken, td.Expire, lastRefresh); err != nil {
+					res.OK = false
+					res.Error = err.Error()
+				} else {
+					_ = s.accounts.SetStatus(r.Context(), acc.ID, "active", "")
+					res.OK = true
+				}
+			}
+			mu.Lock()
+			results[i] = res
+			if res.OK {
+				okN++
+			} else {
+				failN++
+			}
+			mu.Unlock()
+		}(i, acc)
+	}
+	wg.Wait()
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total_candidates": len(candidates),
+		"attempted":        len(targets),
+		"success":          okN,
+		"failed":           failN,
+		"only_expiring":    body.OnlyExpiring,
+		"within_minutes":   body.WithinMinutes,
+		"results":          results,
+	})
+}
+
+func (s *Server) handleAdminExportAccountsFiltered(w http.ResponseWriter, r *http.Request) {
+	if s.accounts == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "accounts not configured"})
+		return
+	}
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	list, err := s.accounts.List(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	now := time.Now().UTC()
+	var out []json.RawMessage
+	for _, a := range list {
+		if status != "" && status != "all" {
+			if status == "expired" {
+				if strings.TrimSpace(a.ExpiresAt) == "" {
+					continue
+				}
+				exp, err := time.Parse(time.RFC3339, a.ExpiresAt)
+				if err != nil {
+					exp, err = time.Parse(time.RFC3339Nano, a.ExpiresAt)
+				}
+				if err != nil || !exp.Before(now) {
+					continue
+				}
+			} else if a.Status != status {
+				continue
+			}
+		}
+		if q != "" {
+			hay := strings.ToLower(strings.Join([]string{a.Email, a.Label, a.ID, a.Subject, a.ErrorMessage}, " "))
+			if !strings.Contains(hay, strings.ToLower(q)) {
+				continue
+			}
+		}
+		raw, err := s.accounts.ExportJSON(r.Context(), a.ID)
+		if err != nil {
+			continue
+		}
+		out = append(out, json.RawMessage(raw))
+	}
+	if out == nil {
+		out = []json.RawMessage{}
+	}
+	// Export as JSON array for re-import.
+	// ExportJSON returns object; re-marshal as array of objects.
+	arr := make([]any, 0, len(out))
+	for _, raw := range out {
+		var obj any
+		if json.Unmarshal(raw, &obj) == nil {
+			arr = append(arr, obj)
+		}
+	}
+	data, err := json.MarshalIndent(arr, "", "  ")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", `attachment; filename="accounts-export.json"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 func (s *Server) handleAdminRefreshAccount(w http.ResponseWriter, r *http.Request) {

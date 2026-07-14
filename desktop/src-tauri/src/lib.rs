@@ -44,6 +44,121 @@ fn get_listen_port(state: tauri::State<'_, AppState>) -> u16 {
 }
 
 #[tauri::command]
+fn import_local_cliproxy_accounts(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
+    use std::fs;
+    let home = dirs::home_dir().ok_or_else(|| "cannot resolve home dir".to_string())?;
+    let dir = home.join(".cli-proxy-api");
+    if !dir.is_dir() {
+        return Err(format!("directory not found: {}", dir.display()));
+    }
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    let mut skipped = 0i64;
+    let rd = fs::read_dir(&dir).map_err(|e| format!("read dir: {e}"))?;
+    for ent in rd.flatten() {
+        let path = ent.path();
+        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        if !name.starts_with("xai-") || !name.ends_with(".json") {
+            continue;
+        }
+        let text = match fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(_) => {
+                skipped += 1;
+                continue;
+            }
+        };
+        let mut v: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(_) => {
+                skipped += 1;
+                continue;
+            }
+        };
+        // require access_token
+        let has_access = v.get("access_token").and_then(|x| x.as_str()).unwrap_or("").len() > 0;
+        if !has_access {
+            skipped += 1;
+            continue;
+        }
+        if v.get("type").is_none() {
+            v.as_object_mut().map(|o| o.insert("type".into(), serde_json::Value::String("xai".into())));
+        }
+        if v.get("auth_kind").is_none() {
+            v.as_object_mut().map(|o| o.insert("auth_kind".into(), serde_json::Value::String("oauth".into())));
+        }
+        items.push(v);
+    }
+    if items.is_empty() {
+        return Ok(serde_json::json!({"inserted":0,"updated":0,"skipped":skipped,"total_files":0}));
+    }
+    let base = state
+        .sidecar
+        .lock()
+        .map(|s| s.base_url())
+        .map_err(|e| e.to_string())?;
+    let token = state
+        .sidecar
+        .lock()
+        .map(|s| s.desktop_token())
+        .map_err(|e| e.to_string())?;
+
+    // silent login to get cookie
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("http client: {e}"))?;
+    let login_url = format!("{}/admin/api/desktop-login", base.trim_end_matches('/'));
+    let login_res = client
+        .post(&login_url)
+        .header("X-Grok-Bridge-Desktop-Token", &token)
+        .header("Content-Type", "application/json")
+        .body(serde_json::json!({"token": token}).to_string())
+        .send()
+        .map_err(|e| format!("desktop login: {e}"))?;
+    if !login_res.status().is_success() {
+        return Err(format!("desktop login failed: {}", login_res.status()));
+    }
+    let mut cookie = String::new();
+    for (k, v) in login_res.headers().iter() {
+        let name = k.as_str();
+        if name.eq_ignore_ascii_case("set-cookie") {
+            if let Ok(val) = v.to_str() {
+                // keep only name=value before first ';'
+                let part = val.split(';').next().unwrap_or(val).trim();
+                if !part.is_empty() {
+                    if !cookie.is_empty() {
+                        cookie.push_str("; ");
+                    }
+                    cookie.push_str(part);
+                }
+            }
+        }
+    }
+    let import_url = format!("{}/admin/api/accounts/import?enable=1", base.trim_end_matches('/'));
+    let body = serde_json::to_string(&items).map_err(|e| format!("encode import body: {e}"))?;
+    let mut req = client
+        .post(&import_url)
+        .header("Content-Type", "application/json")
+        .body(body);
+    if !cookie.is_empty() {
+        req = req.header("Cookie", cookie);
+    }
+    let import_res = req.send().map_err(|e| format!("import request: {e}"))?;
+    let status = import_res.status();
+    let body = import_res.text().unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!("import failed: {} {}", status, body));
+    }
+    let mut val: serde_json::Value =
+        serde_json::from_str(&body).unwrap_or_else(|_| serde_json::json!({}));
+    if let Some(obj) = val.as_object_mut() {
+        obj.insert("skipped".into(), serde_json::json!(skipped));
+        obj.insert("total_files".into(), serde_json::json!(items.len()));
+    }
+    Ok(val)
+}
+
+#[tauri::command]
 fn set_listen_port(app: AppHandle, state: tauri::State<'_, AppState>, port: u16) -> Result<String, String> {
     if !(1024..=65535).contains(&port) {
         return Err("端口需在 1024-65535".into());
@@ -233,7 +348,7 @@ pub fn run() {
         .manage(AppState {
             sidecar: Mutex::new(SidecarManager::new()),
         })
-        .invoke_handler(tauri::generate_handler![service_status, service_base_url, get_listen_port, set_listen_port])
+        .invoke_handler(tauri::generate_handler![service_status, service_base_url, get_listen_port, set_listen_port, import_local_cliproxy_accounts])
         .setup(|app| {
             setup_tray(app.handle())?;
             let handle = app.handle().clone();

@@ -777,6 +777,20 @@
       }),
       el("button", {
         type: "button",
+        className: "btn btn-sm",
+        text: "刷新选中Token",
+        disabled: !selectedIds.length,
+        onclick: () => bulkRefreshAccounts(false),
+      }),
+      el("button", {
+        type: "button",
+        className: "btn btn-sm",
+        text: "刷新即将过期",
+        title: "默认处理已过期或1小时内到期账号（最多200，并发5）",
+        onclick: () => bulkRefreshAccounts(true),
+      }),
+      el("button", {
+        type: "button",
         className: "btn btn-sm btn-ghost",
         text: "清空选择",
         disabled: !selectedIds.length,
@@ -948,6 +962,19 @@
               const input = document.getElementById("import-file");
               if (input) input.click();
             },
+          }),
+          el("button", {
+            type: "button",
+            className: "btn",
+            text: "导入本机CPA账号",
+            title: "扫描 ~/.cli-proxy-api 下 xai-*.json 并导入",
+            onclick: () => importLocalCliproxyAccounts(),
+          }),
+          el("button", {
+            type: "button",
+            className: "btn",
+            text: "导出筛选",
+            onclick: () => exportFilteredAccounts(),
           }),
           el("button", {
             type: "button",
