@@ -13,6 +13,26 @@ It speaks Anthropic Messages and OpenAI Chat/Responses on the public side, trans
 - Request logging and dashboard aggregates
 - Embedded admin SPA at `/admin`
 
+
+## Desktop packages (macOS / Windows)
+
+Portable archives (no installer wizard):
+
+```bash
+# build all targets on a Mac with Go installed
+./scripts/build-release.sh
+# artifacts in ./dist
+#   grok-bridge_<ver>_darwin_arm64.tar.gz
+#   grok-bridge_<ver>_darwin_amd64.tar.gz
+#   grok-bridge_<ver>_windows_amd64.zip
+```
+
+Or download release assets from GitHub Releases.
+
+- macOS: extract and run `./start.sh`
+- Windows: extract and run `start.bat`
+- See `packaging/README-RELEASE.md` for details
+
 ## Quick start
 
 ### 1. Config

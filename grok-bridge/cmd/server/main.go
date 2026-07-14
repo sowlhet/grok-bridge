@@ -19,16 +19,28 @@ import (
 	"github.com/wlhet/grok-bridge/internal/config"
 	dbpkg "github.com/wlhet/grok-bridge/internal/db"
 	xai "github.com/wlhet/grok-bridge/internal/executor/xai"
+	"github.com/wlhet/grok-bridge/internal/httpproxy"
 	"github.com/wlhet/grok-bridge/internal/logging"
 	"github.com/wlhet/grok-bridge/internal/models"
-	"github.com/wlhet/grok-bridge/internal/httpproxy"
 	"github.com/wlhet/grok-bridge/internal/pipeline"
 	rt "github.com/wlhet/grok-bridge/internal/runtime"
 )
 
+// Filled by -ldflags at release build time.
+var (
+	Version   = "dev"
+	Commit    = "none"
+	BuildDate = "unknown"
+)
+
 func main() {
 	configPath := flag.String("config", "config.yaml", "path to config YAML")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+	if *showVersion {
+		log.Printf("grok-bridge %s (commit=%s built=%s)", Version, Commit, BuildDate)
+		return
+	}
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -156,23 +168,23 @@ func main() {
 	}
 
 	s := api.NewServer(api.ServerDeps{
-		Pipeline:             p,
-		Keys:                 keyStore,
-		Catalog:              catalog,
-		Accounts:             accStore,
-		Logs:                 logStore,
-		OAuth:                oauth,
-		AdminPassword:        cfg.Admin.Password,
-		AdminSessionTTL:      sessionTTL,
-		LogBodies:            cfg.Proxy.LogBodies,
-		LogRetentionDays:     cfg.Proxy.LogRetentionDays,
-		HTTPProxy:            cfg.Proxy.HTTPProxy,
-		Scheduling:           cfg.Proxy.Scheduling,
-		MaxConcurrency:       cfg.Proxy.MaxConcurrency,
-		AccountConcurrency:   cfg.Proxy.AccountConcurrency,
-		MaxAccountSwitches:   cfg.Proxy.Retry.MaxAccountSwitches,
-		MaxTransientRetries:  cfg.Proxy.Retry.MaxTransientRetries,
-		OnProxySettings:      applyProxy,
+		Pipeline:            p,
+		Keys:                keyStore,
+		Catalog:             catalog,
+		Accounts:            accStore,
+		Logs:                logStore,
+		OAuth:               oauth,
+		AdminPassword:       cfg.Admin.Password,
+		AdminSessionTTL:     sessionTTL,
+		LogBodies:           cfg.Proxy.LogBodies,
+		LogRetentionDays:    cfg.Proxy.LogRetentionDays,
+		HTTPProxy:           cfg.Proxy.HTTPProxy,
+		Scheduling:          cfg.Proxy.Scheduling,
+		MaxConcurrency:      cfg.Proxy.MaxConcurrency,
+		AccountConcurrency:  cfg.Proxy.AccountConcurrency,
+		MaxAccountSwitches:  cfg.Proxy.Retry.MaxAccountSwitches,
+		MaxTransientRetries: cfg.Proxy.Retry.MaxTransientRetries,
+		OnProxySettings:     applyProxy,
 	})
 
 	// Log retention purge: once at start, then hourly.
@@ -182,7 +194,7 @@ func main() {
 	adminAddr := strings.TrimSpace(cfg.Server.AdminListen)
 
 	if adminAddr == "" {
-		log.Printf("listening on %s (sqlite=%s)", publicAddr, sqlitePath)
+		log.Printf("grok-bridge %s starting; listening on %s (sqlite=%s)", Version, publicAddr, sqlitePath)
 		if err := http.ListenAndServe(publicAddr, s.Handler()); err != nil {
 			log.Printf("server stopped: %v", err)
 			os.Exit(1)
@@ -191,7 +203,7 @@ func main() {
 	}
 
 	// Split listeners: public API vs admin UI/API.
-	log.Printf("public listening on %s; admin listening on %s (sqlite=%s)", publicAddr, adminAddr, sqlitePath)
+	log.Printf("grok-bridge %s starting; public %s admin %s (sqlite=%s)", Version, publicAddr, adminAddr, sqlitePath)
 	errCh := make(chan error, 2)
 	go func() {
 		errCh <- http.ListenAndServe(publicAddr, s.PublicHandler())
