@@ -40,36 +40,51 @@ fn service_base_url(state: tauri::State<'_, AppState>) -> String {
 
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
+        // Only show/focus — never reload page here (prevents tray flicker).
         let _ = window.show();
+        let _ = window.unminimize();
         let _ = window.set_focus();
     }
 }
 
 fn navigate_main_to_admin(app: &AppHandle, url: &str) {
-    if let Some(window) = app.get_webview_window("main") {
-        let js_url = serde_json::to_string(url).unwrap_or_else(|_| "\"about:blank\"".into());
-        let _ = window.eval(&format!("window.location.replace({js_url})"));
-    }
+    let Some(window) = app.get_webview_window("main") else { return; };
+    let Ok(url_json) = serde_json::to_string(url) else { return; };
+    // Navigate only if not already on /admin to avoid white-flash reloads.
+    let mut js = String::new();
+    js.push_str("(function(){");
+    js.push_str("var target=");
+    js.push_str(&url_json);
+    js.push(';');
+    js.push_str("var href=String(location.href||\"\");");
+    js.push_str("if(href.indexOf(\"/admin\")>=0){return;}");
+    js.push_str("location.replace(target);");
+    js.push_str("})();");
+    let _ = window.eval(&js);
 }
 
 fn start_service(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
     let mut mgr = state.sidecar.lock().map_err(|e| e.to_string())?;
+    let already_running = matches!(mgr.state(), process::ServiceState::Running);
     mgr.start()?;
     let admin = mgr.admin_url();
     let token = mgr.desktop_token();
     drop(mgr);
-    navigate_main_to_admin(app, &admin);
-    if !token.is_empty() {
-        let app2 = app.clone();
-        let admin2 = admin.clone();
-        let token2 = token.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(250));
-            silent_login_and_open(&app2, &admin2, &token2);
-            std::thread::sleep(std::time::Duration::from_millis(900));
-            silent_login_and_open(&app2, &admin2, &token2);
-        });
+
+    // First boot only: open admin + silent login once.
+    // Later tray clicks only show the existing window (no reload).
+    if !already_running {
+        navigate_main_to_admin(app, &admin);
+        if !token.is_empty() {
+            let app2 = app.clone();
+            let admin2 = admin.clone();
+            let token2 = token.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                silent_login_and_open(&app2, &admin2, &token2);
+            });
+        }
     }
     show_main_window(app);
     Ok(())
@@ -82,15 +97,20 @@ fn silent_login_and_open(app: &AppHandle, admin_url: &str, desktop_token: &str) 
     let base = admin_url.trim_end_matches('/').trim_end_matches("/admin").to_string();
     let login_url = format!("{}/admin/api/desktop-login", base.trim_end_matches('/'));
     let Ok(login_json) = serde_json::to_string(&login_url) else { return; };
+
     let mut js = String::new();
     js.push_str("(async()=>{");
+    js.push_str("if(window.__gbDesktopAuthed){return;}");
     js.push_str("const loginApi="); js.push_str(&login_json); js.push(';');
     js.push_str("const adminUrl="); js.push_str(&admin_json); js.push(';');
     js.push_str("const token="); js.push_str(&token_json); js.push(';');
     js.push_str("try{");
     js.push_str("const res=await fetch(loginApi,{method:\"POST\",credentials:\"include\",headers:{\"Content-Type\":\"application/json\",\"X-Grok-Bridge-Desktop-Token\":token},body:JSON.stringify({token})});");
     js.push_str("if(!res.ok){console.warn(\"desktop silent login failed\",res.status);return;}");
-    js.push_str("location.replace(adminUrl);");
+    js.push_str("window.__gbDesktopAuthed=true;");
+    js.push_str("var href=String(location.href||\"\");");
+    js.push_str("if(href.indexOf(\"/admin\")<0){location.replace(adminUrl);}");
+    js.push_str("else if(document.querySelector(\"input[type=password]\")){location.replace(adminUrl);}");
     js.push_str("}catch(e){console.warn(\"desktop silent login error\",e);}");
     js.push_str("})();");
     let _ = window.eval(&js);
