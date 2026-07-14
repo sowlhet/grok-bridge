@@ -643,21 +643,81 @@ pre.body-block {
   color: var(--text);
 }
 
+.settings-page .page-header-compact {
+  margin-bottom: 12px;
+}
+
 .settings-panel {
-  max-width: 640px;
+  max-width: 980px;
+  padding: 14px;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.settings-card {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  min-width: 0;
+}
+
+.settings-card-wide {
+  grid-column: 1 / -1;
 }
 
 .settings-section {
-  margin: 20px 0 10px;
-  font-size: 14px;
+  margin: 0 0 10px;
+  font-size: 13px;
   color: #93c5fd;
   font-weight: 600;
+}
+
+.settings-panel .form-group {
+  margin-bottom: 10px;
+}
+
+.settings-panel .form-group:last-child {
+  margin-bottom: 0;
+}
+
+.settings-panel .form-group label {
+  margin-bottom: 4px;
+}
+
+.settings-panel .form-group input,
+.settings-panel .form-group select,
+.settings-panel .form-group textarea {
+  padding: 8px 10px;
+}
+
+.settings-panel .muted {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .form-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  gap: 10px;
+}
+
+.settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+@media (max-width: 900px) {
+  .settings-grid { grid-template-columns: 1fr; }
+  .settings-card-wide { grid-column: auto; }
 }
 
 @media (max-width: 720px) {

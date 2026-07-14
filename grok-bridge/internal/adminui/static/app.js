@@ -970,141 +970,170 @@
           });
         },
       },
-      el("h3", { className: "settings-section", text: "上游网络" }),
       el(
         "div",
-        { className: "form-group" },
-        el("label", { for: "http_proxy", text: "HTTP/SOCKS 代理" }),
-        el("input", {
-          type: "text",
-          id: "http_proxy",
-          name: "http_proxy",
-          placeholder: "例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080，留空用环境变量",
-          value: s.http_proxy || "",
-        }),
-        el("p", { className: "muted", text: "仅影响访问 xAI / OAuth 的出站请求。保存后立即生效。" })
-      ),
-      el("h3", { className: "settings-section", text: "账号调度" }),
-      el(
-        "div",
-        { className: "form-group" },
-        el("label", { for: "scheduling", text: "轮询策略" }),
+        { className: "settings-grid" },
         el(
-          "select",
-          { id: "scheduling", name: "scheduling" },
-          el("option", { value: "round_robin", text: "轮询（round_robin）", selected: scheduling === "round_robin" }),
-          el("option", { value: "weighted", text: "加权轮询（weighted）", selected: scheduling === "weighted" })
-        ),
-        el("p", { className: "muted", text: "加权模式按账号「权重」分配流量，可在账号列表中修改权重。" })
-      ),
-      el(
-        "div",
-        { className: "form-row" },
-        el(
-          "div",
-          { className: "form-group" },
-          el("label", { for: "max_account_switches", text: "失败切号次数" }),
-          el("input", {
-            type: "number",
-            id: "max_account_switches",
-            name: "max_account_switches",
-            min: "0",
-            value: String(s.max_account_switches ?? 2),
-          })
+          "section",
+          { className: "settings-card" },
+          el("h3", { className: "settings-section", text: "上游网络" }),
+          el(
+            "div",
+            { className: "form-group" },
+            el("label", { for: "http_proxy", text: "HTTP/SOCKS 代理" }),
+            el("input", {
+              type: "text",
+              id: "http_proxy",
+              name: "http_proxy",
+              placeholder: "http://127.0.0.1:7890 / socks5://...，空=环境变量",
+              value: s.http_proxy || "",
+            })
+          )
         ),
         el(
-          "div",
-          { className: "form-group" },
-          el("label", { for: "max_transient_retries", text: "瞬时重试（预留）" }),
-          el("input", {
-            type: "number",
-            id: "max_transient_retries",
-            name: "max_transient_retries",
-            min: "0",
-            value: String(s.max_transient_retries ?? 2),
-          })
-        )
-      ),
-      el("h3", { className: "settings-section", text: "并发限制" }),
-      el(
-        "div",
-        { className: "form-row" },
-        el(
-          "div",
-          { className: "form-group" },
-          el("label", { for: "max_concurrency", text: "全局最大并发" }),
-          el("input", {
-            type: "number",
-            id: "max_concurrency",
-            name: "max_concurrency",
-            min: "0",
-            value: String(s.max_concurrency ?? 0),
-          }),
-          el("p", { className: "muted", text: "0 = 不限制" })
+          "section",
+          { className: "settings-card" },
+          el("h3", { className: "settings-section", text: "账号调度" }),
+          el(
+            "div",
+            { className: "form-group" },
+            el("label", { for: "scheduling", text: "轮询策略" }),
+            el(
+              "select",
+              { id: "scheduling", name: "scheduling" },
+              el("option", { value: "round_robin", text: "轮询", selected: scheduling === "round_robin" }),
+              el("option", { value: "weighted", text: "加权轮询", selected: scheduling === "weighted" })
+            )
+          ),
+          el(
+            "div",
+            { className: "form-row" },
+            el(
+              "div",
+              { className: "form-group" },
+              el("label", { for: "max_account_switches", text: "失败切号次数" }),
+              el("input", {
+                type: "number",
+                id: "max_account_switches",
+                name: "max_account_switches",
+                min: "0",
+                value: String(s.max_account_switches ?? 2),
+              })
+            ),
+            el(
+              "div",
+              { className: "form-group" },
+              el("label", { for: "max_transient_retries", text: "瞬时重试" }),
+              el("input", {
+                type: "number",
+                id: "max_transient_retries",
+                name: "max_transient_retries",
+                min: "0",
+                value: String(s.max_transient_retries ?? 2),
+              })
+            )
+          )
         ),
         el(
-          "div",
-          { className: "form-group" },
-          el("label", { for: "account_concurrency", text: "单账号最大并发" }),
-          el("input", {
-            type: "number",
-            id: "account_concurrency",
-            name: "account_concurrency",
-            min: "0",
-            value: String(s.account_concurrency ?? 0),
-          }),
-          el("p", { className: "muted", text: "0 = 不限制" })
-        )
-      ),
-      el("h3", { className: "settings-section", text: "日志" }),
-      el(
-        "div",
-        { className: "form-group" },
-        el("label", { for: "log_bodies", text: "请求体记录" }),
+          "section",
+          { className: "settings-card" },
+          el("h3", { className: "settings-section", text: "并发限制（0=不限）" }),
+          el(
+            "div",
+            { className: "form-row" },
+            el(
+              "div",
+              { className: "form-group" },
+              el("label", { for: "max_concurrency", text: "全局最大并发" }),
+              el("input", {
+                type: "number",
+                id: "max_concurrency",
+                name: "max_concurrency",
+                min: "0",
+                value: String(s.max_concurrency ?? 0),
+              })
+            ),
+            el(
+              "div",
+              { className: "form-group" },
+              el("label", { for: "account_concurrency", text: "单账号最大并发" }),
+              el("input", {
+                type: "number",
+                id: "account_concurrency",
+                name: "account_concurrency",
+                min: "0",
+                value: String(s.account_concurrency ?? 0),
+              })
+            )
+          )
+        ),
         el(
-          "select",
-          { id: "log_bodies", name: "log_bodies" },
-          ...[
-            ["off", "关闭"],
-            ["errors_only", "仅错误"],
-            ["sample", "采样"],
-            ["all", "全部"],
-          ].map(([v, lab]) => el("option", { value: v, text: lab, selected: logBodies === v }))
+          "section",
+          { className: "settings-card" },
+          el("h3", { className: "settings-section", text: "日志" }),
+          el(
+            "div",
+            { className: "form-row" },
+            el(
+              "div",
+              { className: "form-group" },
+              el("label", { for: "log_bodies", text: "请求体记录" }),
+              el(
+                "select",
+                { id: "log_bodies", name: "log_bodies" },
+                ...[
+                  ["off", "关闭"],
+                  ["errors_only", "仅错误"],
+                  ["sample", "采样"],
+                  ["all", "全部"],
+                ].map(([v, lab]) => el("option", { value: v, text: lab, selected: logBodies === v }))
+              )
+            ),
+            el(
+              "div",
+              { className: "form-group" },
+              el("label", { for: "retention", text: "保留天数" }),
+              el("input", {
+                type: "number",
+                id: "retention",
+                name: "retention",
+                min: "0",
+                value: String(retention),
+              })
+            )
+          )
+        ),
+        el(
+          "section",
+          { className: "settings-card settings-card-wide" },
+          el("h3", { className: "settings-section", text: "安全" }),
+          el(
+            "div",
+            { className: "form-group" },
+            el("label", { for: "admin_password", text: "新管理员密码（可选）" }),
+            el("input", {
+              type: "password",
+              id: "admin_password",
+              name: "admin_password",
+              autocomplete: "new-password",
+              placeholder: "留空不修改；无环境变量时会写入数据库",
+            })
+          )
         )
       ),
       el(
         "div",
-        { className: "form-group" },
-        el("label", { for: "retention", text: "日志保留天数" }),
-        el("input", {
-          type: "number",
-          id: "retention",
-          name: "retention",
-          min: "0",
-          value: String(retention),
-        })
-      ),
-      el("h3", { className: "settings-section", text: "安全" }),
-      el(
-        "div",
-        { className: "form-group" },
-        el("label", { for: "admin_password", text: "新管理员密码（可选）" }),
-        el("input", {
-          type: "password",
-          id: "admin_password",
-          name: "admin_password",
-          autocomplete: "new-password",
-          placeholder: "留空则不修改",
-        }),
-        el("p", {
-          className: "muted",
-          text: "立即更新当前进程。若未设置环境变量 GROK_BRIDGE_ADMIN_PASSWORD，会写入数据库以便重启后生效。",
-        })
-      ),
-      el("button", { type: "submit", className: "btn btn-primary", text: "保存设置" })
+        { className: "settings-actions" },
+        el("button", { type: "submit", className: "btn btn-primary", text: "保存设置" })
+      )
     );
 
-    const content = el("div", null, el("div", { className: "page-header" }, el("h2", { text: "设置" })), form);
+    const content = el(
+      "div",
+      { className: "settings-page" },
+      el("div", { className: "page-header page-header-compact" }, el("h2", { text: "设置" })),
+      form
+    );
     renderShell(content);
   }
 
