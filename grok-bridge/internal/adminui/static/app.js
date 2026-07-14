@@ -23,6 +23,7 @@
 
   // 防止快速切换菜单时旧请求覆盖新页面
   let loadSeq = 0;
+  let toastTimer = 0;
 
   // ---------- helpers ----------
   async function api(path, opts = {}) {
@@ -116,17 +117,38 @@
     return el("span", { className: "badge " + cls, text: String(code) });
   }
 
+  function clearToastTimer() {
+    if (toastTimer) {
+      clearTimeout(toastTimer);
+      toastTimer = 0;
+    }
+  }
+
+  function scheduleToastClear() {
+    clearToastTimer();
+    toastTimer = setTimeout(() => {
+      state.error = "";
+      state.flash = "";
+      toastTimer = 0;
+      // soft re-render only if still on same messages
+      render();
+    }, 1000);
+  }
+
   function setFlash(msg) {
     state.flash = msg;
     state.error = "";
+    scheduleToastClear();
   }
 
   function setError(msg) {
     state.error = msg;
     state.flash = "";
+    scheduleToastClear();
   }
 
   function clearMessages() {
+    clearToastTimer();
     state.error = "";
     state.flash = "";
   }
@@ -449,7 +471,6 @@
       },
       el("h1", { text: "Grok Bridge" }),
       el("p", { className: "subtitle", text: "管理后台" }),
-      state.error ? el("div", { className: "error-banner", text: state.error }) : null,
       el(
         "div",
         { className: "form-group" },
@@ -511,8 +532,6 @@
     if (state.loading) {
       mainKids.push(el("div", { className: "loading-bar", text: "加载中…" }));
     }
-    if (state.error) mainKids.push(el("div", { className: "error-banner", text: state.error }));
-    if (state.flash) mainKids.push(el("div", { className: "success-banner", text: state.flash }));
     mainKids.push(content);
 
     const shell = el("div", { className: "shell" }, sidebar, el("main", { className: "main" }, ...mainKids));
@@ -520,6 +539,24 @@
     const extras = [];
     if (state.modal) extras.push(renderModal());
     if (state.selectedLog) extras.push(renderLogDrawer());
+    if (state.error || state.flash) {
+      extras.push(
+        el(
+          "div",
+          {
+            className: "toast-host",
+            onclick: () => {
+              clearMessages();
+              render();
+            },
+          },
+          el("div", {
+            className: "toast " + (state.error ? "toast-error" : "toast-success"),
+            text: state.error || state.flash,
+          })
+        )
+      );
+    }
 
     app.replaceChildren(shell, ...extras);
   }
@@ -1454,6 +1491,23 @@
   function render() {
     if (!state.authed) {
       renderLogin();
+      if (state.error || state.flash) {
+        const host = el(
+          "div",
+          {
+            className: "toast-host",
+            onclick: () => {
+              clearMessages();
+              render();
+            },
+          },
+          el("div", {
+            className: "toast " + (state.error ? "toast-error" : "toast-success"),
+            text: state.error || state.flash,
+          })
+        );
+        app.appendChild(host);
+      }
       return;
     }
     switch (state.page) {
